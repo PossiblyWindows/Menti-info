@@ -52,6 +52,59 @@
 
   const slideCards = [];
 
+  const importSection = document.createElement("div");
+  importSection.style.display = "grid";
+  importSection.style.gap = "6px";
+  importSection.style.padding = "10px";
+  importSection.style.borderRadius = "10px";
+  importSection.style.background = "rgba(30, 41, 59, 0.4)";
+  importSection.style.border = "1px solid rgba(148, 163, 184, 0.18)";
+
+  const importHeader = document.createElement("div");
+  importHeader.style.display = "flex";
+  importHeader.style.alignItems = "center";
+  importHeader.style.justifyContent = "space-between";
+
+  const importTitle = document.createElement("span");
+  importTitle.textContent = "Import slides";
+  importTitle.style.fontWeight = "600";
+
+  const importButton = document.createElement("button");
+  importButton.type = "button";
+  importButton.textContent = "Load .txt";
+  importButton.style.border = "1px solid rgba(148, 163, 184, 0.3)";
+  importButton.style.background = "rgba(15, 23, 42, 0.65)";
+  importButton.style.color = "#38bdf8";
+  importButton.style.padding = "6px 10px";
+  importButton.style.borderRadius = "8px";
+  importButton.style.fontWeight = "600";
+  importButton.style.cursor = "pointer";
+
+  const importInput = document.createElement("input");
+  importInput.type = "file";
+  importInput.accept = ".txt,.ktutil";
+  importInput.style.display = "none";
+
+  const importInfo = document.createElement("div");
+  importInfo.style.fontSize = "11px";
+  importInfo.style.opacity = "0.75";
+  importInfo.style.lineHeight = "1.45";
+  importInfo.innerHTML =
+    "Each line: <code>quiz | Question | Answer 1 | Answer 2 | Answer 3 | Answer 4 | Correct(1-4)</code><br>" +
+    "True/False: <code>truefalse | Question | true/false</code><br>Use <code>\\n</code> for new lines and <code>\\|</code> for literal pipes.";
+
+  const importStatus = document.createElement("div");
+  importStatus.style.fontSize = "11px";
+  importStatus.style.minHeight = "14px";
+  importStatus.style.opacity = "0.75";
+
+  importHeader.appendChild(importTitle);
+  importHeader.appendChild(importButton);
+  importSection.appendChild(importHeader);
+  importSection.appendChild(importInfo);
+  importSection.appendChild(importStatus);
+  importSection.appendChild(importInput);
+
   function createTextField(placeholder = "", multiline = false) {
     const field = multiline ? document.createElement("textarea") : document.createElement("input");
     if (!multiline) {
@@ -105,6 +158,95 @@
       card.setIndex(index);
       card.updateRemoveVisibility(slideCards.length > 1);
     });
+  }
+
+  function clearSlides() {
+    slideCards.splice(0, slideCards.length);
+    while (slidesContainer.firstChild) {
+      slidesContainer.removeChild(slidesContainer.firstChild);
+    }
+  }
+
+  function splitUnescaped(line) {
+    const parts = [];
+    let current = "";
+    for (let i = 0; i < line.length; i += 1) {
+      const char = line[i];
+      const prev = line[i - 1];
+      if (char === "|" && prev !== "\\") {
+        parts.push(current);
+        current = "";
+      } else {
+        current += char;
+      }
+    }
+    parts.push(current);
+    return parts;
+  }
+
+  function decodeSegment(raw) {
+    return raw
+      .replace(/\\\|/g, "|")
+      .replace(/\\n/g, "\n")
+      .replace(/\\t/g, "\t")
+      .trim();
+  }
+
+  function parseSlidesFromText(text) {
+    const lines = text.split(/\r?\n/);
+    const parsed = [];
+    lines.forEach((line, index) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) {
+        return;
+      }
+
+      const segments = splitUnescaped(trimmed).map(decodeSegment);
+      const type = (segments[0] || "").toLowerCase();
+
+      if (type === "quiz") {
+        if (segments.length < 7) {
+          throw new Error(`Line ${index + 1}: quiz format requires 7 segments.`);
+        }
+        const answers = segments.slice(2, 6);
+        while (answers.length < 4) {
+          answers.push("");
+        }
+        const correctIndex = parseInt(segments[6], 10) - 1;
+        if (Number.isNaN(correctIndex) || correctIndex < 0 || correctIndex > 3) {
+          throw new Error(`Line ${index + 1}: correct option must be 1-4.`);
+        }
+        parsed.push({
+          type: "quiz",
+          question: segments[1] || "",
+          answers,
+          correctIndex,
+          trueFalseCorrect: "true"
+        });
+        return;
+      }
+
+      if (type === "truefalse" || type === "true/false" || type === "tf") {
+        if (segments.length < 3) {
+          throw new Error(`Line ${index + 1}: true/false format requires 3 segments.`);
+        }
+        const correctValue = (segments[2] || "").toLowerCase();
+        if (correctValue !== "true" && correctValue !== "false") {
+          throw new Error(`Line ${index + 1}: correct value must be true or false.`);
+        }
+        parsed.push({
+          type: "truefalse",
+          question: segments[1] || "",
+          answers: ["True", "False", "", ""],
+          correctIndex: correctValue === "true" ? 0 : 1,
+          trueFalseCorrect: correctValue
+        });
+        return;
+      }
+
+      throw new Error(`Line ${index + 1}: unknown slide type "${segments[0]}".`);
+    });
+    return parsed;
   }
 
   function createSlideCard(initialData = {}) {
@@ -286,6 +428,15 @@
     updateCardOrdering();
   }
 
+  function applyImportedSlides(slidesData) {
+    clearSlides();
+    if (slidesData.length === 0) {
+      addSlide();
+      return;
+    }
+    slidesData.forEach((data) => addSlide(data));
+  }
+
   const addSlideButton = document.createElement("button");
   addSlideButton.type = "button";
   addSlideButton.textContent = "+ Add slide";
@@ -350,6 +501,47 @@
   status.style.opacity = "0.75";
   status.style.minHeight = "14px";
 
+  importButton.addEventListener("click", () => {
+    importStatus.style.color = "";
+    importStatus.textContent = "";
+    importInput.click();
+  });
+
+  importInput.addEventListener("change", () => {
+    const file = importInput.files && importInput.files[0];
+    if (!file) {
+      return;
+    }
+    importStatus.style.color = "";
+    importStatus.textContent = "Reading file...";
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const text = typeof reader.result === "string" ? reader.result : "";
+        const parsedSlides = parseSlidesFromText(text);
+        applyImportedSlides(parsedSlides);
+        importStatus.style.color = "#4ade80";
+        importStatus.textContent =
+          parsedSlides.length === 0
+            ? `No slides found in ${file.name}.`
+            : `Imported ${parsedSlides.length} slide${
+                parsedSlides.length === 1 ? "" : "s"
+              } from ${file.name}.`;
+      } catch (error) {
+        importStatus.style.color = "#f87171";
+        importStatus.textContent = error.message || "Failed to parse file.";
+      }
+      importInput.value = "";
+    };
+    reader.onerror = () => {
+      importStatus.style.color = "#f87171";
+      importStatus.textContent = "Unable to read the selected file.";
+      importInput.value = "";
+    };
+    reader.readAsText(file);
+  });
+
+  form.appendChild(importSection);
   form.appendChild(slidesContainer);
   form.appendChild(addSlideButton);
   form.appendChild(controls);
@@ -407,25 +599,119 @@
     );
   }
 
-  function setContentEditableValue(element, value) {
-    if (!element) return;
+  function simulatePointerActivation(target) {
+    if (!target) return;
+    const rect = target.getBoundingClientRect();
+    const clientX = rect.left + Math.max(Math.min(rect.width * 0.5, 12), 1);
+    const clientY = rect.top + Math.max(Math.min(rect.height * 0.5, 12), 1);
+    ["pointerdown", "mousedown", "pointerup", "mouseup", "click"].forEach((type) => {
+      const event = new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        button: 0,
+        clientX,
+        clientY
+      });
+      target.dispatchEvent(event);
+    });
+  }
 
-    element.focus();
-    document.execCommand("selectAll", false, null);
-    document.execCommand("insertText", false, value);
+  function dispatchKeyboardEvent(target, type, meta) {
+    const event = new KeyboardEvent(type, {
+      key: meta.key,
+      code: meta.code,
+      bubbles: true,
+      cancelable: true
+    });
+    const keyCode = meta.keyCode || 0;
+    Object.defineProperty(event, "keyCode", { get: () => keyCode });
+    Object.defineProperty(event, "which", { get: () => keyCode });
+    target.dispatchEvent(event);
+  }
 
+  function getKeyMetadata(char) {
+    if (char === "\n") {
+      return { key: "Enter", code: "Enter", keyCode: 13 };
+    }
+    if (char === "\t") {
+      return { key: "Tab", code: "Tab", keyCode: 9 };
+    }
+    if (char === " ") {
+      return { key: " ", code: "Space", keyCode: 32 };
+    }
+    if (char === "") {
+      return { key: "", code: "", keyCode: 0 };
+    }
+    if (/^[a-z]$/i.test(char)) {
+      return { key: char, code: `Key${char.toUpperCase()}`, keyCode: char.toUpperCase().charCodeAt(0) };
+    }
+    if (/^[0-9]$/.test(char)) {
+      return { key: char, code: `Digit${char}`, keyCode: char.charCodeAt(0) };
+    }
+    return { key: char, code: `Key${char.toUpperCase()}`, keyCode: char.charCodeAt(0) };
+  }
+
+  function sendBackspace(target) {
+    const meta = { key: "Backspace", code: "Backspace", keyCode: 8 };
+    dispatchKeyboardEvent(target, "keydown", meta);
+    document.execCommand("delete", false, null);
     try {
-      element.dispatchEvent(
-        new InputEvent("input", {
-          data: value,
-          inputType: "insertFromPaste",
-          bubbles: true,
-          cancelable: true
-        })
+      target.dispatchEvent(
+        new InputEvent("input", { data: null, inputType: "deleteContentBackward", bubbles: true })
       );
     } catch (error) {
-      element.dispatchEvent(new Event("input", { bubbles: true }));
+      target.dispatchEvent(new Event("input", { bubbles: true }));
     }
+    dispatchKeyboardEvent(target, "keyup", meta);
+  }
+
+  function typeCharacter(target, char) {
+    const meta = getKeyMetadata(char);
+    dispatchKeyboardEvent(target, "keydown", meta);
+    if (meta.key && (meta.key.length === 1 || meta.key === "Enter" || meta.key === " ")) {
+      dispatchKeyboardEvent(target, "keypress", meta);
+    }
+    if (char === "\n") {
+      document.execCommand("insertText", false, "\n");
+      try {
+        target.dispatchEvent(
+          new InputEvent("input", { data: "\n", inputType: "insertText", bubbles: true })
+        );
+      } catch (error) {
+        target.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    } else {
+      document.execCommand("insertText", false, char);
+      try {
+        target.dispatchEvent(
+          new InputEvent("input", { data: char, inputType: "insertText", bubbles: true })
+        );
+      } catch (error) {
+        target.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    }
+    dispatchKeyboardEvent(target, "keyup", meta);
+  }
+
+  function typeIntoContentEditable(element, value) {
+    if (!element) return;
+
+    simulatePointerActivation(element);
+    element.focus({ preventScroll: true });
+
+    document.execCommand("selectAll", false, null);
+    sendBackspace(element);
+
+    const segments = value.split(/\r?\n/);
+    segments.forEach((segment, segmentIndex) => {
+      Array.from(segment).forEach((char) => {
+        typeCharacter(element, char);
+      });
+      if (segmentIndex < segments.length - 1) {
+        typeCharacter(element, "\n");
+      }
+    });
 
     element.dispatchEvent(new Event("change", { bubbles: true }));
     element.blur();
@@ -499,7 +785,7 @@
     }
 
     if (questionEditor) {
-      setContentEditableValue(questionEditor, data.question || "");
+      typeIntoContentEditable(questionEditor, data.question || "");
     }
 
     let answerEditors = [];
@@ -515,7 +801,7 @@
     }
 
     answerEditors.slice(0, 4).forEach((editor, index) => {
-      setContentEditableValue(editor, data.answers[index] || "");
+      typeIntoContentEditable(editor, data.answers[index] || "");
     });
 
     let toggleButtons = [];
@@ -543,7 +829,7 @@
     }
 
     if (questionEditor) {
-      setContentEditableValue(questionEditor, data.question || "");
+      typeIntoContentEditable(questionEditor, data.question || "");
     }
 
     let toggleButtons = [];
