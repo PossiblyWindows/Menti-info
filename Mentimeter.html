@@ -308,15 +308,37 @@ function parseQuestionsFromDeck(data) {
     return /telefona numuru|vecums|ieraksti|teksts|ievadi/i.test(textValue || '');
   }
 
+  function looksLikeChoiceItem(value) {
+    if (typeof value === 'string') {
+      return Boolean(value.trim());
+    }
+    if (!value || typeof value !== 'object') {
+      return false;
+    }
+    const indicativeKeys = [
+      'interactive_content_choice_id',
+      'title',
+      'label',
+      'text',
+      'name',
+      'value',
+      'statement',
+      'option'
+    ];
+    return indicativeKeys.some(key => {
+      const candidate = value[key];
+      return typeof candidate === 'string' ? candidate.trim().length > 0 : false;
+    });
+  }
+
   function extractChoices(container) {
     if (!container || typeof container !== 'object') return null;
     for (const key of choiceKeys) {
       const value = container[key];
-      if (Array.isArray(value) && value.length) {
+      if (Array.isArray(value) && value.length && value.some(looksLikeChoiceItem)) {
         return value;
       }
     }
-    if (Array.isArray(container)) return container.length ? container : null;
     return null;
   }
 
