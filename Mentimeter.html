@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="lv" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <title>Mentimeter Jautājumi</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { darkMode: 'class' }
+  </script>
+</head>
+<body class="bg-gray-100 text-gray-900 dark:bg-gray-900 dark:text-gray-100 min-h-screen p-6">
+  <div class="max-w-4xl mx-auto">
+    <div class="flex justify-between items-center mb-6">
+      <h1 class="text-3xl font-bold">Mentimeter Jautājumi</h1>
+      <button id="themeToggle" class="px-3 py-2 bg-gray-300 dark:bg-gray-700 rounded-lg">🌙/☀️</button>
+    </div>
+
+    <!-- JSON editor -->
+    <div class="mb-6 space-y-3">
+      <label class="block text-sm">Ievadi vai ielādē JSON:</label>
+      <textarea id="jsonInput" class="w-full h-40 p-3 rounded-lg bg-gray-200 dark:bg-gray-800 border border-gray-300 dark:border-gray-700" placeholder="Ielīmē šeit mentimeter_questions.json saturu..."></textarea>
+      <input type="file" id="fileInput" accept=".json,.txt" class="block w-full text-sm text-gray-700 dark:text-gray-300">
+      <button onclick="loadQuestions()" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg">Parādīt jautājumus</button>
+    </div>
+
+    <!-- Quiz container -->
+    <div id="quizContainer" class="space-y-6"></div>
+
+    <!-- Export controls -->
+    <div class="mt-8 p-4 bg-gray-200 dark:bg-gray-800 rounded-lg shadow space-y-3">
+      <h2 class="text-xl font-semibold">Eksportēt atbildes</h2>
+      <select id="exportMode" class="bg-gray-100 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-lg p-2 w-full">
+        <option value="letters">Tikai burti (A, B, C...)</option>
+        <option value="question-letter">Jautājums + burts</option>
+        <option value="questions">Tikai jautājumi</option>
+        <option value="detailed">Pilns formāts ar tekstu laukiem</option>
+      </select>
+      <button onclick="exportAnswers()" class="px-4 py-2 bg-green-600 hover:bg-green-500 rounded-lg w-full">Lejupielādēt TXT</button>
+    </div>
+  </div>
+
+<script>
+let questionsData = [];
+
+// Dark mode toggle
+document.getElementById("themeToggle").addEventListener("click", () => {
+  document.documentElement.classList.toggle("dark");
+});
+
+// File upload
+document.getElementById("fileInput").addEventListener("change", function(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => document.getElementById("jsonInput").value = e.target.result;
+  reader.readAsText(file);
+});
+
+function loadQuestions() {
+  const input = document.getElementById("jsonInput").value;
+  let data;
+  try {
+    data = JSON.parse(input);
+  } catch (err) {
+    alert("JSON formāts nav pareizs!");
+    return;
+  }
+  if (!data.slide_deck || !data.slide_deck.slides) {
+    alert("Nav atrasti jautājumi JSON failā.");
+    return;
+  }
+
+  questionsData = [];
+  const container = document.getElementById("quizContainer");
+  container.innerHTML = "";
+
+  let qNumber = 1;
+
+  data.slide_deck.slides.forEach(slide => {
+    if (slide.interactive_contents && slide.interactive_contents.length > 0) {
+      slide.interactive_contents.forEach(content => {
+        if (content.choices && content.choices.length > 0) {
+          const q = {
+            number: qNumber,
+            title: slide.title || `Jautājums ${qNumber}`,
+            choices: content.choices.map((c, i) => ({
+              letter: String.fromCharCode(65 + i),
+              text: c.title,
+              type: (c.title.includes("telefona numuru") || c.title.includes("vecums")) ? "text" : "radio",
+              answer: null
+            }))
+          };
+          questionsData.push(q);
+
+          // Render UI
+          const div = document.createElement("div");
+          div.className = "p-5 bg-white dark:bg-gray-800 rounded-lg shadow";
+
+          const title = document.createElement("h2");
+          title.className = "text-lg font-semibold mb-3";
+          title.textContent = `${q.number}. ${q.title}`;
+          div.appendChild(title);
+
+          const optionsDiv = document.createElement("div");
+          optionsDiv.className = "space-y-2";
+
+          q.choices.forEach(choice => {
+            const block = document.createElement("div");
+
+            const label = document.createElement("div");
+            label.className = "font-medium";
+            label.textContent = `${choice.letter}) ${choice.text}`;
+            block.appendChild(label);
+
+            if (choice.type === "radio") {
+              const input = document.createElement("input");
+              input.type = "radio";
+              input.name = "q" + q.number;
+              input.value = choice.letter;
+              input.className = "mt-1";
+              input.onchange = () => q.choices.forEach(c => c.answer = (c.letter === choice.letter ? choice.letter : null));
+              block.appendChild(input);
+            } else {
+              const input = document.createElement("input");
+              input.type = "text";
+              input.placeholder = "Ieraksti savu atbildi...";
+              input.className = "mt-2 w-full p-2 rounded bg-gray-100 dark:bg-gray-700";
+              input.oninput = () => choice.answer = input.value;
+              block.appendChild(input);
+            }
+
+            optionsDiv.appendChild(block);
+          });
+
+          div.appendChild(optionsDiv);
+          container.appendChild(div);
+
+          qNumber++;
+        }
+      });
+    }
+  });
+}
+
+function exportAnswers() {
+  const mode = document.getElementById("exportMode").value;
+  let lines = [];
+
+  questionsData.forEach(q => {
+    q.choices.forEach(choice => {
+      if (mode === "letters" && choice.answer) {
+        lines.push(choice.answer);
+      } else if (mode === "question-letter" && choice.answer) {
+        lines.push(`${q.number}. ${q.title} — ${choice.answer}`);
+      } else if (mode === "questions" && choice.answer) {
+        lines.push(`${q.number}. ${q.title}`);
+      } else if (mode === "detailed" && choice.answer) {
+        lines.push(`${q.number}. ${q.title}\n`);
+        lines.push(`${choice.letter}) ${choice.text}\n`);
+        lines.push(`[TEXT] ${choice.answer}\n`);
+      }
+    });
+  });
+
+  if (lines.length === 0) {
+    alert("Nav atlasītas atbildes!");
+    return;
+  }
+
+  const blob = new Blob([lines.join("\n")], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "atbildes.txt";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+// --- Simulated API handler (client-side only) ---
+const originalFetch = window.fetch;
+window.fetch = async (url, options = {}) => {
+  const isApi = typeof url === "string" && url.match(/^\/api\/?$/i);
+  const method = (options.method || "GET").toUpperCase();
+
+  // Intercept POST /api
+  if (isApi && method === "POST") {
+    let raw;
+    try {
+      raw = options.body;
+      if (raw instanceof Blob) raw = await raw.text();
+      if (typeof raw !== "string") raw = JSON.stringify(raw);
+      const data = JSON.parse(raw);
+
+      if (!data.slide_deck || !data.slide_deck.slides)
+        throw new Error("Invalid JSON structure — missing slide_deck or slides");
+
+      let qNumber = 1;
+      const formatted = [];
+
+      data.slide_deck.slides.forEach(slide => {
+        if (slide.interactive_contents && slide.interactive_contents.length > 0) {
+          slide.interactive_contents.forEach(content => {
+            if (content.choices && content.choices.length > 0) {
+              formatted.push({
+                number: qNumber++,
+                title: slide.title || `Jautājums ${qNumber}`,
+                choices: content.choices.map((c, i) => ({
+                  letter: String.fromCharCode(65 + i),
+                  text: c.title
+                }))
+              });
+            }
+          });
+        }
+      });
+
+      return new Response(JSON.stringify(formatted, null, 2), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    } catch (err) {
+      return new Response(
+        JSON.stringify({ error: err.message || "Invalid JSON" }),
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      );
+    }
+  }
+
+  // Intercept GET /api — return last loaded questions if available
+  if (isApi && method === "GET") {
+    if (!questionsData || questionsData.length === 0) {
+      return new Response(JSON.stringify({ error: "No data loaded yet" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
+    return new Response(JSON.stringify(questionsData, null, 2), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+
+  // fallback to real fetch for everything else
+  return originalFetch(url, options);
+};
+
+</script>
+</body>
+</html>
