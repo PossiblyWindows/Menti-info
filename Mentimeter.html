@@ -232,46 +232,155 @@ function escapeHtml(value) {
 }
 
 function parseQuestionsFromDeck(data) {
-  if (!data || !data.slide_deck || !Array.isArray(data.slide_deck.slides)) {
-    return [];
-  }
+  if (!data) return [];
 
   const questions = [];
   let qNumber = 1;
+  const visited = new WeakSet();
 
-  data.slide_deck.slides.forEach(slide => {
-    if (!slide || !Array.isArray(slide.interactive_contents)) return;
+  const choiceKeys = ['choices', 'options', 'alternatives', 'answers'];
+  const titleKeys = ['title', 'question', 'heading', 'name', 'label', 'question_text', 'text'];
 
-    slide.interactive_contents.forEach(content => {
-      if (!content || !Array.isArray(content.choices) || content.choices.length === 0) return;
+  function normalizeText(value, fallback) {
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed.length) return trimmed;
+    }
+    if (Array.isArray(value)) {
+      const joined = value.map(part => (typeof part === 'string' ? part.trim() : '')).filter(Boolean).join(' ');
+      if (joined.length) return joined;
+    }
+    return fallback;
+  }
 
-      const parsedChoices = content.choices.map((choice, index) => {
-        const letter = String.fromCharCode(65 + index);
-        const title = typeof choice?.title === 'string' && choice.title.trim().length > 0
-          ? choice.title.trim()
-          : `Atbilde ${letter}`;
-        const isTextMeta = Boolean(
-          choice?.type === 'open' ||
-          choice?.input_type === 'text' ||
-          choice?.value_type === 'text' ||
-          choice?.allow_free_text ||
-          choice?.allow_text
-        );
-        const isText = isTextMeta || /telefona numuru|vecums|ieraksti|teksts/i.test(title);
-        return { letter, text: title, isText, response: null };
-      });
+  function detectTitle(node, fallback) {
+    if (!node || typeof node !== 'object') return fallback;
+    for (const key of titleKeys) {
+      if (key in node) {
+        const value = node[key];
+        const normalized = normalizeText(value, null);
+        if (normalized) return normalized;
+      }
+    }
+    return fallback;
+  }
 
-      questions.push({
-        number: qNumber,
-        title: typeof slide.title === 'string' && slide.title.trim().length > 0
-          ? slide.title.trim()
-          : `Jautājums ${qNumber}`,
-        choices: parsedChoices
-      });
+  function determineChoiceText(choice, letter) {
+    const textCandidates = [
+      choice?.title,
+      choice?.label,
+      choice?.text,
+      choice?.name,
+      choice?.value,
+      choice?.statement,
+      choice?.option
+    ];
+    for (const candidate of textCandidates) {
+      const normalized = normalizeText(candidate, null);
+      if (normalized) return normalized;
+    }
+    if (typeof choice === 'string') {
+      const normalized = choice.trim();
+      if (normalized.length) return normalized;
+    }
+    return `Atbilde ${letter}`;
+  }
 
-      qNumber += 1;
+  function determineChoiceIsText(choice, textValue) {
+    if (!choice || typeof choice !== 'object') {
+      return /ieraksti|teksts|uzraksti/i.test(textValue || '');
+    }
+
+    const flags = [
+      choice?.type,
+      choice?.input_type,
+      choice?.value_type,
+      choice?.question_type,
+      choice?.result_type,
+      choice?.presentation_type
+    ];
+    const joinedFlags = flags.filter(Boolean).join(' ').toLowerCase();
+    if (/[\s_-](text|input|open|wordcloud)/.test(joinedFlags)) return true;
+
+    if (choice?.allow_free_text || choice?.allow_text || choice?.is_text || choice?.isOpen || choice?.open) {
+      return true;
+    }
+
+    return /telefona numuru|vecums|ieraksti|teksts|ievadi/i.test(textValue || '');
+  }
+
+  function extractChoices(container) {
+    if (!container || typeof container !== 'object') return null;
+    for (const key of choiceKeys) {
+      const value = container[key];
+      if (Array.isArray(value) && value.length) {
+        return value;
+      }
+    }
+    if (Array.isArray(container)) return container.length ? container : null;
+    return null;
+  }
+
+  function addQuestion(container, inheritedTitle) {
+    const rawChoices = extractChoices(container);
+    if (!rawChoices) return false;
+
+    const title = detectTitle(container, inheritedTitle || `Jautājums ${qNumber}`) || `Jautājums ${qNumber}`;
+    const parsedChoices = rawChoices.map((choice, index) => {
+      const letter = String.fromCharCode(65 + index);
+      const text = determineChoiceText(choice, letter);
+      const isText = determineChoiceIsText(choice, text);
+      return { letter, text, isText, response: null };
     });
-  });
+
+    if (!parsedChoices.length) return false;
+
+    questions.push({
+      number: qNumber,
+      title,
+      choices: parsedChoices
+    });
+
+    qNumber += 1;
+    return true;
+  }
+
+  function traverse(node, inheritedTitle) {
+    if (!node || typeof node !== 'object') return;
+    if (visited.has(node)) return;
+    visited.add(node);
+
+    if (addQuestion(node, inheritedTitle)) return;
+
+    const nextTitle = detectTitle(node, inheritedTitle);
+
+    if (Array.isArray(node)) {
+      node.forEach(item => traverse(item, inheritedTitle));
+      return;
+    }
+
+    Object.entries(node).forEach(([key, value]) => {
+      if (!value || typeof value !== 'object') return;
+      const keyIsTitle = /title|question|heading|label/i.test(key);
+      const propagatedTitle = keyIsTitle ? detectTitle({ [key]: value }, nextTitle) : nextTitle;
+      traverse(value, propagatedTitle);
+    });
+  }
+
+  const entryCandidates = [];
+  if (Array.isArray(data)) {
+    entryCandidates.push(...data);
+  } else {
+    entryCandidates.push(
+      data.slide_deck,
+      data.deck,
+      data.slides,
+      data.questions,
+      data
+    );
+  }
+
+  entryCandidates.filter(Boolean).forEach(candidate => traverse(candidate, null));
 
   return questions;
 }
@@ -413,18 +522,25 @@ function loadQuestions(source = 'Manuāli', variant = 'manual') {
 
 function handleAutoImport(payload) {
   if (!payload) return;
+
+  lastRawPayload = payload;
+  try {
+    jsonInput.value = JSON.stringify(payload, null, 2);
+  } catch (error) {
+    console.error('Neizdevās serializēt pārtverto JSON.', error);
+  }
+
   const parsedQuestions = parseQuestionsFromDeck(payload);
   if (!parsedQuestions.length) {
-    appendCaptureLog('Pārtvertais pieprasījums nesaturēja atbalstītu jautājumu formātu.');
-    return;
+    setAutoStatus('Pārtvertais pieprasījums nesaturēja atpazīstamas atbilžu opcijas.', 'error');
+    return { success: false, reason: 'Nepazīstams formāts' };
   }
 
   questionsData = parsedQuestions;
-  lastRawPayload = payload;
-  jsonInput.value = JSON.stringify(payload, null, 2);
   renderQuestions();
   setCurrentSourceChip(`Automātiski • ${new Date().toLocaleTimeString('lv-LV')}`, 'auto');
   setAutoStatus('Jautājumi importēti automātiski.', 'active');
+  return { success: true, questionCount: parsedQuestions.length };
 }
 
 function exportAnswers() {
@@ -528,10 +644,14 @@ async function registerNetworkSniffer() {
       const match = typeof url === 'string' ? targetPattern.exec(url) : null;
       const deckId = escapeHtml(match?.[1] || 'nezināms');
       const safeUrl = escapeHtml(url || '');
-      appendCaptureLog(`Pārtverts <code>${deckId}</code> pieprasījums (${safeUrl}).`);
-      handleAutoImport(body);
-      if (capturedAt) {
-        setCurrentSourceChip(`Automātiski • ${new Date(capturedAt).toLocaleTimeString('lv-LV')}`, 'auto');
+      const importResult = handleAutoImport(body);
+      if (importResult?.success) {
+        appendCaptureLog(`Pārtverts <code>${deckId}</code> pieprasījums (${safeUrl}). Importēti ${importResult.questionCount} jautājumi.`);
+        if (capturedAt) {
+          setCurrentSourceChip(`Automātiski • ${new Date(capturedAt).toLocaleTimeString('lv-LV')}`, 'auto');
+        }
+      } else {
+        appendCaptureLog(`Pārtverts <code>${deckId}</code> pieprasījums (${safeUrl}), bet neizdevās automātiski nolasīt jautājumus.`);
       }
     });
 
