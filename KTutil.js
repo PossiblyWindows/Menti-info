@@ -1,17 +1,17 @@
 (() => {
-  if (window.KahootPaligsLoaded) {
-    console.warn("Palīgs jau darbojas šajā lapā.");
+  if (window.KahootHelperLoaded) {
+    console.warn("Helper is already running on this page.");
     return;
   }
-  window.KahootPaligsLoaded = true;
+  window.KahootHelperLoaded = true;
 
-  const existingPanel = document.getElementById("kahoot-paligs-panel");
+  const existingPanel = document.getElementById("kahoot-helper-panel");
   if (existingPanel) {
     existingPanel.remove();
   }
 
   const root = document.createElement("div");
-  root.id = "kahoot-paligs-panel";
+  root.id = "kahoot-helper-panel";
   root.style.position = "fixed";
   root.style.top = "16px";
   root.style.right = "16px";
@@ -29,14 +29,14 @@
   root.style.backdropFilter = "blur(10px)";
 
   const heading = document.createElement("div");
-  heading.textContent = "Kahoot palīgs";
+  heading.textContent = "Kahoot helper";
   heading.style.fontSize = "18px";
   heading.style.fontWeight = "700";
   heading.style.textAlign = "center";
   heading.style.marginBottom = "4px";
 
   const subheading = document.createElement("div");
-  subheading.textContent = "Ielasiet jautājumus un aizpildiet Kahoot automātiski.";
+  subheading.textContent = "Load questions and fill Kahoot automatically.";
   subheading.style.fontSize = "12px";
   subheading.style.opacity = "0.75";
   subheading.style.textAlign = "center";
@@ -66,12 +66,12 @@
   importHeader.style.justifyContent = "space-between";
 
   const importTitle = document.createElement("span");
-  importTitle.textContent = "Ielādēt slaidus";
+  importTitle.textContent = "Load slides";
   importTitle.style.fontWeight = "600";
 
   const importButton = document.createElement("button");
   importButton.type = "button";
-  importButton.textContent = "Atvērt failu";
+  importButton.textContent = "Open file";
   importButton.style.border = "1px solid rgba(148, 163, 184, 0.3)";
   importButton.style.background = "rgba(15, 23, 42, 0.65)";
   importButton.style.color = "#38bdf8";
@@ -90,9 +90,9 @@
   importInfo.style.opacity = "0.75";
   importInfo.style.lineHeight = "1.45";
   importInfo.innerHTML =
-    "Katra rinda: <code>quiz | jautājums | atbilde 1 | atbilde 2 | atbilde 3 | atbilde 4 | pareizā (1-4)</code><br>" +
-    "Patiesi/Aplami: <code>truefalse | jautājums | true/false</code><br>Ja vēlaties jaunu rindu, lietojiet <code>\\n</code>, bet " +
-    "vertikālo svītru <code>|</code> rakstiet kā <code>\\|</code>.";
+    "Each line: <code>quiz | question | answer 1 | answer 2 | answer 3 | answer 4 | correct (1-4)</code><br>" +
+    "True/False: <code>truefalse | question | true/false</code><br>If you need a new line use <code>\\n</code>, and " +
+    "escape the pipe <code>|</code> as <code>\\|</code>.";
 
   const importStatus = document.createElement("div");
   importStatus.style.fontSize = "11px";
@@ -207,7 +207,7 @@
 
       if (type === "quiz") {
         if (segments.length < 7) {
-          throw new Error(`${index + 1}. rinda: "quiz" ierakstam jābūt 7 daļām.`);
+          throw new Error(`Line ${index + 1}: quiz entries must have 7 parts.`);
         }
         const answers = segments.slice(2, 6);
         while (answers.length < 4) {
@@ -215,7 +215,7 @@
         }
         const correctIndex = parseInt(segments[6], 10) - 1;
         if (Number.isNaN(correctIndex) || correctIndex < 0 || correctIndex > 3) {
-          throw new Error(`${index + 1}. rinda: pareizās atbildes numuram jābūt 1-4.`);
+          throw new Error(`Line ${index + 1}: correct answer index must be 1-4.`);
         }
         parsed.push({
           type: "quiz",
@@ -229,11 +229,11 @@
 
       if (type === "truefalse" || type === "true/false" || type === "tf") {
         if (segments.length < 3) {
-          throw new Error(`${index + 1}. rinda: "truefalse" ierakstam jābūt 3 daļām.`);
+          throw new Error(`Line ${index + 1}: truefalse entries must have 3 parts.`);
         }
         const correctValue = (segments[2] || "").toLowerCase();
         if (correctValue !== "true" && correctValue !== "false") {
-          throw new Error(`${index + 1}. rinda: pareizajai vērtībai jābūt true vai false.`);
+          throw new Error(`Line ${index + 1}: truefalse value must be true or false.`);
         }
         parsed.push({
           type: "truefalse",
@@ -245,7 +245,7 @@
         return;
       }
 
-      throw new Error(`${index + 1}. rinda: nezināms slaida tips "${segments[0]}".`);
+      throw new Error(`Line ${index + 1}: unknown slide type "${segments[0]}".`);
     });
     return parsed;
   }
@@ -274,12 +274,12 @@
 
     const title = document.createElement("span");
     title.style.fontWeight = "600";
-    title.textContent = "Slaids";
+    title.textContent = "Slide";
 
     const removeButton = document.createElement("button");
     removeButton.type = "button";
     removeButton.textContent = "✕";
-    removeButton.title = "Noņemt slaidu";
+    removeButton.title = "Remove slide";
     removeButton.style.border = "none";
     removeButton.style.background = "transparent";
     removeButton.style.color = "#94a3b8";
@@ -308,11 +308,11 @@
     typeLabel.style.display = "grid";
     typeLabel.style.gap = "6px";
     typeLabel.style.fontWeight = "600";
-    typeLabel.textContent = "Slaida veids";
+    typeLabel.textContent = "Slide type";
 
     const typeSelect = createSelect([
-      { value: "quiz", label: "Tests (4 atbildes)" },
-      { value: "truefalse", label: "Patiesi / Aplami" }
+      { value: "quiz", label: "Quiz (4 answers)" },
+      { value: "truefalse", label: "True / False" }
     ]);
     typeSelect.value = type;
 
@@ -320,9 +320,9 @@
     questionLabel.style.display = "grid";
     questionLabel.style.gap = "6px";
     questionLabel.style.fontWeight = "600";
-    questionLabel.textContent = "Jautājums";
+    questionLabel.textContent = "Question";
 
-    const questionField = createTextField("Ievadiet jautājumu", true);
+    const questionField = createTextField("Enter the question", true);
     questionField.value = question;
 
     const quizGroup = document.createElement("div");
@@ -334,9 +334,9 @@
       wrapper.style.display = "grid";
       wrapper.style.gap = "4px";
       wrapper.style.fontWeight = "600";
-      wrapper.textContent = `Atbilde ${idx + 1}`;
+      wrapper.textContent = `Answer ${idx + 1}`;
 
-      const input = createTextField(`Atbilžu variants ${idx + 1}`);
+      const input = createTextField(`Answer option ${idx + 1}`);
       input.value = answers[idx] || "";
       wrapper.appendChild(input);
       quizGroup.appendChild(wrapper);
@@ -347,13 +347,13 @@
     correctSelectLabel.style.display = "grid";
     correctSelectLabel.style.gap = "4px";
     correctSelectLabel.style.fontWeight = "600";
-    correctSelectLabel.textContent = "Pareizā atbilde";
+    correctSelectLabel.textContent = "Correct answer";
 
     const correctSelect = createSelect([
-      { value: "0", label: "Variants 1" },
-      { value: "1", label: "Variants 2" },
-      { value: "2", label: "Variants 3" },
-      { value: "3", label: "Variants 4" }
+      { value: "0", label: "Option 1" },
+      { value: "1", label: "Option 2" },
+      { value: "2", label: "Option 3" },
+      { value: "3", label: "Option 4" }
     ]);
     correctSelect.value = String(correctIndex);
     correctSelectLabel.appendChild(correctSelect);
@@ -364,7 +364,7 @@
     trueFalseGroup.style.gap = "6px";
 
     const trueFalseInfo = document.createElement("p");
-    trueFalseInfo.textContent = "Pareizās atbildes pārslēgs izmanto Kahoot piedāvātās Patiesi/Aplami pogas.";
+    trueFalseInfo.textContent = "The correct toggle uses Kahoot's built-in True/False buttons.";
     trueFalseInfo.style.margin = "0";
     trueFalseInfo.style.fontSize = "11px";
     trueFalseInfo.style.opacity = "0.7";
@@ -373,11 +373,11 @@
     trueFalseSelectLabel.style.display = "grid";
     trueFalseSelectLabel.style.gap = "4px";
     trueFalseSelectLabel.style.fontWeight = "600";
-    trueFalseSelectLabel.textContent = "Pareizā izvēle";
+    trueFalseSelectLabel.textContent = "Correct choice";
 
     const trueFalseSelect = createSelect([
-      { value: "true", label: "Patiesi" },
-      { value: "false", label: "Aplami" }
+      { value: "true", label: "True" },
+      { value: "false", label: "False" }
     ]);
     trueFalseSelect.value = trueFalseCorrect;
     trueFalseSelectLabel.appendChild(trueFalseSelect);
@@ -405,7 +405,7 @@
     return {
       root: section,
       setIndex(index) {
-        title.textContent = `Slaids ${index + 1}`;
+        title.textContent = `Slide ${index + 1}`;
       },
       updateRemoveVisibility(canRemove) {
         removeButton.style.visibility = canRemove ? "visible" : "hidden";
@@ -440,7 +440,7 @@
 
   const addSlideButton = document.createElement("button");
   addSlideButton.type = "button";
-  addSlideButton.textContent = "+ Pievienot slaidu";
+  addSlideButton.textContent = "+ Add slide";
   addSlideButton.style.padding = "8px";
   addSlideButton.style.borderRadius = "8px";
   addSlideButton.style.border = "1px solid rgba(148, 163, 184, 0.3)";
@@ -463,7 +463,7 @@
 
   const startButton = document.createElement("button");
   startButton.type = "submit";
-  startButton.textContent = "Sākt";
+  startButton.textContent = "Start";
   startButton.style.padding = "9px";
   startButton.style.border = "none";
   startButton.style.borderRadius = "8px";
@@ -481,7 +481,7 @@
 
   const closeButton = document.createElement("button");
   closeButton.type = "button";
-  closeButton.textContent = "Aizvērt";
+  closeButton.textContent = "Close";
   closeButton.style.padding = "9px";
   closeButton.style.border = "none";
   closeButton.style.borderRadius = "8px";
@@ -491,7 +491,7 @@
   closeButton.style.color = "#f8fafc";
   closeButton.addEventListener("click", () => {
     root.remove();
-    window.KahootPaligsLoaded = false;
+    window.KahootHelperLoaded = false;
   });
 
   controls.appendChild(startButton);
@@ -514,7 +514,7 @@
       return;
     }
     importStatus.style.color = "";
-    importStatus.textContent = "Lasu failu...";
+    importStatus.textContent = "Reading file...";
     const reader = new FileReader();
     reader.onload = () => {
       try {
@@ -524,19 +524,19 @@
         importStatus.style.color = "#4ade80";
         importStatus.textContent =
           parsedSlides.length === 0
-            ? `Failā ${file.name} slaidi netika atrasti.`
-            : `Ielādēti ${parsedSlides.length} slaid${
-                parsedSlides.length === 1 ? "s" : "i"
-              } no ${file.name}.`;
+            ? `No slides were found in ${file.name}.`
+            : `Loaded ${parsedSlides.length} slide${
+                parsedSlides.length === 1 ? "" : "s"
+              } from ${file.name}.`;
       } catch (error) {
         importStatus.style.color = "#f87171";
-        importStatus.textContent = error.message || "Neizdevās nolasīt failu.";
+        importStatus.textContent = error.message || "Failed to read file.";
       }
       importInput.value = "";
     };
     reader.onerror = () => {
       importStatus.style.color = "#f87171";
-      importStatus.textContent = "Nevar nolasīt izvēlēto failu.";
+      importStatus.textContent = "Unable to read the selected file.";
       importInput.value = "";
     };
     reader.readAsText(file);
@@ -562,7 +562,7 @@
           return;
         }
         if (Date.now() - start >= timeout) {
-          reject(new Error("Pārāk ilga gaidīšana uz nosacījumu."));
+          reject(new Error("Timed out while waiting for condition."));
           return;
         }
         if (typeof requestAnimationFrame === "function") {
@@ -701,26 +701,27 @@
     dispatchKeyboardEvent(target, "keyup", meta);
   }
 
-  function typeCharacter(target, char) {
+  async function typeCharacter(target, char) {
     const meta = getKeyMetadata(char);
+    const beforeValue = getNormalizedEditorValue(target);
     dispatchKeyboardEvent(target, "keydown", meta);
     if (meta.key && (meta.key.length === 1 || meta.key === "Enter" || meta.key === " ")) {
       dispatchKeyboardEvent(target, "keypress", meta);
     }
-    if (char === "\n") {
-      const prevented = dispatchBeforeInput(target, "insertParagraph", "\n");
-      if (!prevented) {
-        document.execCommand("insertText", false, "\n");
-        dispatchInput(target, "insertParagraph", "\n");
-      }
-    } else {
-      const prevented = dispatchBeforeInput(target, "insertText", char);
-      if (!prevented) {
-        document.execCommand("insertText", false, char);
-        dispatchInput(target, "insertText", char);
-      }
-    }
+    const inputType = char === "\n" ? "insertParagraph" : "insertText";
+    const data = char === "\n" ? "\n" : char;
+    dispatchBeforeInput(target, inputType, data);
     dispatchKeyboardEvent(target, "keyup", meta);
+    await delay(0);
+    await delay(0);
+    let afterValue = getNormalizedEditorValue(target);
+    if (afterValue === beforeValue) {
+      document.execCommand("insertText", false, data);
+      dispatchInput(target, inputType, data);
+      await delay(0);
+      afterValue = getNormalizedEditorValue(target);
+    }
+    return afterValue;
   }
 
   function getNormalizedEditorValue(element) {
@@ -767,14 +768,15 @@
     }
 
     const segments = value.split(/\r?\n/);
-    segments.forEach((segment, segmentIndex) => {
-      Array.from(segment).forEach((char) => {
-        typeCharacter(element, char);
-      });
-      if (segmentIndex < segments.length - 1) {
-        typeCharacter(element, "\n");
+    for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex += 1) {
+      const segment = segments[segmentIndex];
+      for (const char of Array.from(segment)) {
+        await typeCharacter(element, char);
       }
-    });
+      if (segmentIndex < segments.length - 1) {
+        await typeCharacter(element, "\n");
+      }
+    }
 
     const expected = value.replace(/\r?\n/g, "\n");
     const normalizedExpected = expected.replace(/\n+$/, "");
@@ -795,7 +797,7 @@
     }
 
     if (normalizedActual !== normalizedExpected) {
-      console.warn("Palīgs: redaktora teksts neatbilda gaidītajam pēc rakstīšanas.");
+      console.warn("Helper: editor text did not match the expected value after typing.");
     }
 
     element.dispatchEvent(new Event("change", { bubbles: true }));
@@ -824,7 +826,9 @@
   async function createNewSlide(type) {
     const addTrigger = document.querySelector(".button__Button-sc-c6mvr2-0");
     if (!addTrigger) {
-      console.error("Palīgs: neizdodas atrast pogu jauna jautājuma pievienošanai (.button__Button-sc-c6mvr2-0)");
+      console.error(
+        "Helper: unable to find the button for adding a new question (.button__Button-sc-c6mvr2-0)"
+      );
       return false;
     }
 
@@ -838,13 +842,13 @@
         4000
       );
     } catch (error) {
-      console.error("Palīgs: neizdodas atrast izvēlni ar jautājuma tipiem.");
+      console.error("Helper: unable to find the question type menu.");
       return false;
     }
 
     const optionsWrapper = section.querySelector("div:nth-child(2)");
     if (!optionsWrapper) {
-      console.error("Palīgs: trūkst jautājuma veidu pogu konteinera.");
+      console.error("Helper: missing container for question type buttons.");
       return false;
     }
 
@@ -852,7 +856,7 @@
     const targetIndex = type === "truefalse" ? 1 : 0;
     const targetButton = buttons[targetIndex];
     if (!targetButton) {
-      console.error("Palīgs: neizdodas atrast izvēlēto jautājuma tipu.");
+      console.error("Helper: unable to locate the requested question type option.");
       return false;
     }
 
@@ -866,7 +870,7 @@
     try {
       questionEditor = await waitForCondition(() => getActiveQuestionEditor(), 4000);
     } catch (error) {
-      console.error("Palīgs: nav atrasts testa jautājuma redaktors.");
+      console.error("Helper: quiz question editor was not found.");
     }
 
     if (questionEditor) {
@@ -882,7 +886,7 @@
         return editors.length >= 4 ? editors : null;
       }, 4000);
     } catch (error) {
-      console.error("Palīgs: nav atrasti testa atbilžu lauki.");
+      console.error("Helper: quiz answer fields were not found.");
     }
 
     const usableEditors = answerEditors.slice(0, 4);
@@ -897,7 +901,7 @@
         return toggles.length >= 4 ? toggles : null;
       }, 4000);
     } catch (error) {
-      console.error("Palīgs: nav atrastas testa atbilžu pārslēgšanas pogas.");
+      console.error("Helper: quiz answer toggles were not found.");
     }
 
     const targetToggle = toggleButtons[data.correctIndex];
@@ -911,7 +915,7 @@
     try {
       questionEditor = await waitForCondition(() => getActiveQuestionEditor(), 4000);
     } catch (error) {
-      console.error("Palīgs: nav atrasts Patiesi/Aplami jautājuma lauks.");
+      console.error("Helper: true/false question editor was not found.");
     }
 
     if (questionEditor) {
@@ -925,7 +929,7 @@
         return toggles.length >= 2 ? toggles : null;
       }, 4000);
     } catch (error) {
-      console.error("Palīgs: nav atrastas Patiesi/Aplami izvēles pogas.");
+      console.error("Helper: true/false toggles were not found.");
     }
 
     const targetIndex = data.trueFalseCorrect === "false" ? 1 : 0;
@@ -946,23 +950,21 @@
   async function runAutomation(slidesData) {
     for (let index = 0; index < slidesData.length; index += 1) {
       const slideData = slidesData[index];
-      status.textContent = `Aizpildām slaidu ${index + 1} no ${slidesData.length}...`;
+      status.textContent = `Filling slide ${index + 1} of ${slidesData.length}...`;
       if (index === 0) {
         const ensured = await ensureSlideType(slideData.type);
         if (!ensured) {
-          status.textContent = "Neizdevās sagatavot pirmo slaidu.";
+          status.textContent = "Failed to prepare the first slide.";
           return;
         }
         await delay(200);
         if (detectCurrentSlideType() !== slideData.type) {
-          console.warn(
-            "Palīgs: slaida tips atšķiras no pieprasītā; mēģinu turpināt."
-          );
+          console.warn("Helper: slide type differs from requested; attempting to continue.");
         }
       } else {
         const created = await createNewSlide(slideData.type);
         if (!created) {
-          status.textContent = "Neizdevās izveidot jaunu slaidu.";
+          status.textContent = "Failed to create a new slide.";
           return;
         }
       }
@@ -971,30 +973,30 @@
       await fillSlide(slideData);
       await delay(250);
     }
-    status.textContent = "Slaidi aizpildīti.";
+    status.textContent = "Slides filled.";
   }
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     if (slideCards.length === 0) {
-      status.textContent = "Pievienojiet vismaz vienu slaidu.";
+      status.textContent = "Add at least one slide.";
       return;
     }
 
     const slidesData = slideCards.map((card) => card.getData());
 
     startButton.disabled = true;
-    startButton.textContent = "Darbojas";
-    status.textContent = "Sagatavoju...";
+    startButton.textContent = "Working";
+    status.textContent = "Preparing...";
 
     runAutomation(slidesData)
       .catch((error) => {
-        console.error("Palīgs:", error);
-        status.textContent = "Automatizācija neizdevās. Skatiet konsoli.";
+        console.error("Helper:", error);
+        status.textContent = "Automation failed. Check the console.";
       })
       .finally(() => {
         startButton.disabled = false;
-        startButton.textContent = "Sākt";
+        startButton.textContent = "Start";
       });
   });
 
