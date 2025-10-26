@@ -69,7 +69,7 @@
           <div class="flex items-start justify-between gap-4">
             <div>
               <h2 class="text-xl font-semibold">Automātiska ielāde</h2>
-              <p class="text-sm text-slate-600 dark:text-slate-400">Atver radioswh.lv/gudraks zemāk redzamajā logā. Servisa darbinieks pārtvers jebkuru pieprasījumu uz menti.com un automātiski izvilks jautājumus.</p>
+              <p class="text-sm text-slate-600 dark:text-slate-400">Atver radioswh.lv/gudraks zemāk redzamajā logā, lai pieprasījumi uz menti.com tiktu nolasīti automātiski.</p>
             </div>
             <span class="text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200">Beta</span>
           </div>
@@ -81,7 +81,6 @@
               <span class="w-2 h-2 rounded-full" id="autoStatusDot"></span>
               <span id="autoStatus" class="text-slate-600 dark:text-slate-400">Inicializēju tīkla novērošanu...</span>
             </div>
-            <p class="text-xs text-slate-500 dark:text-slate-500">Ja izmanto lokāli, palaid šo failu caur HTTPS serveri (piem., <code>npx serve</code>), lai automātiskā pārtveršana darbotos.</p>
           </div>
         </div>
 
@@ -594,29 +593,40 @@ function exportAnswersToExcel() {
     return;
   }
 
-  const rows = [];
+  const headerRow = ['Nr.', 'Jautājums', 'Atbilžu burts', 'Atbilžu teksts', 'Atbilde'];
+  const table = [headerRow];
+  const columnWidths = headerRow.map(cell => cell.length);
 
   questionsData.forEach(question => {
     question.choices.forEach(choice => {
       if (!choice.response) return;
-      const answerValue = choice.isText ? choice.response : choice.letter;
-      rows.push({
-        QuestionNumber: question.number,
-        Question: question.title,
-        ChoiceLetter: choice.letter,
-        ChoiceText: choice.text,
-        AnswerValue: answerValue,
-        AnswerType: choice.isText ? 'Teksts' : 'Izvēle'
+      const answerValue = choice.isText ? (choice.response || '') : choice.letter;
+      const choiceText = choice.text || '';
+      const row = [
+        question.number,
+        question.title,
+        choice.letter,
+        choiceText,
+        answerValue
+      ];
+      table.push(row);
+      row.forEach((cell, index) => {
+        const length = typeof cell === 'number' ? String(cell).length : (cell ? cell.length : 0);
+        if (length > columnWidths[index]) {
+          columnWidths[index] = length;
+        }
       });
     });
   });
 
-  if (!rows.length) {
+  if (table.length === 1) {
     alert('Nav atlasītas atbildes eksportēšanai.');
     return;
   }
 
-  const worksheet = XLSX.utils.json_to_sheet(rows);
+  const worksheet = XLSX.utils.aoa_to_sheet(table);
+  worksheet['!cols'] = columnWidths.map(length => ({ wch: Math.min(Math.max(length + 2, 12), 60) }));
+  worksheet['!autofilter'] = { ref: worksheet['!ref'] };
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, 'Atbildes');
   XLSX.writeFile(workbook, 'atbildes.xlsx');
@@ -659,7 +669,7 @@ async function registerNetworkSniffer() {
     readyRegistration.active?.postMessage({ type: 'initialize-sniffer' });
   } catch (error) {
     console.error(error);
-    setAutoStatus('Neizdevās aktivizēt novērošanu. Pārliecinies, ka lapa tiek ielādēta caur HTTPS.', 'error');
+    setAutoStatus('Tīkla novērošanu nevarēja uzsākt. Pārliecinies, ka lapa tiek ielādēta caur HTTPS.', 'error');
   }
 }
 
