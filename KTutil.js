@@ -652,9 +652,24 @@
     return { key: char, code: `Key${char.toUpperCase()}`, keyCode: char.charCodeAt(0) };
   }
 
+  function dispatchBeforeInput(target, inputType, data) {
+    try {
+      const event = new InputEvent("beforeinput", {
+        inputType,
+        data,
+        bubbles: true,
+        cancelable: true
+      });
+      target.dispatchEvent(event);
+    } catch (error) {
+      target.dispatchEvent(new Event("beforeinput", { bubbles: true, cancelable: true }));
+    }
+  }
+
   function sendBackspace(target) {
     const meta = { key: "Backspace", code: "Backspace", keyCode: 8 };
     dispatchKeyboardEvent(target, "keydown", meta);
+    dispatchBeforeInput(target, "deleteContentBackward", null);
     document.execCommand("delete", false, null);
     try {
       target.dispatchEvent(
@@ -673,15 +688,17 @@
       dispatchKeyboardEvent(target, "keypress", meta);
     }
     if (char === "\n") {
+      dispatchBeforeInput(target, "insertParagraph", null);
       document.execCommand("insertText", false, "\n");
       try {
         target.dispatchEvent(
-          new InputEvent("input", { data: "\n", inputType: "insertText", bubbles: true })
+          new InputEvent("input", { data: "\n", inputType: "insertParagraph", bubbles: true })
         );
       } catch (error) {
         target.dispatchEvent(new Event("input", { bubbles: true }));
       }
     } else {
+      dispatchBeforeInput(target, "insertText", char);
       document.execCommand("insertText", false, char);
       try {
         target.dispatchEvent(
@@ -712,6 +729,26 @@
         typeCharacter(element, "\n");
       }
     });
+
+    const expected = value.replace(/\r?\n/g, "\n");
+    const actual = (element.innerText || element.textContent || "")
+      .replace(/\r?\n/g, "\n")
+      .replace(/\u200b/gi, "");
+    const normalizedExpected = expected.replace(/\n+$/, "");
+    const normalizedActual = actual.replace(/\n+$/, "");
+
+    if (normalizedActual !== normalizedExpected) {
+      document.execCommand("selectAll", false, null);
+      dispatchBeforeInput(element, "insertText", expected);
+      document.execCommand("insertText", false, expected);
+      try {
+        element.dispatchEvent(
+          new InputEvent("input", { data: expected, inputType: "insertText", bubbles: true })
+        );
+      } catch (error) {
+        element.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    }
 
     element.dispatchEvent(new Event("change", { bubbles: true }));
     element.blur();
