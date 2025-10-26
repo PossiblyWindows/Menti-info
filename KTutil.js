@@ -722,7 +722,14 @@
     dispatchKeyboardEvent(target, "keyup", meta);
   }
 
-  function typeIntoContentEditable(element, value) {
+  function getNormalizedEditorValue(element) {
+    return (element.innerText || element.textContent || "")
+      .replace(/\r?\n/g, "\n")
+      .replace(/\u200b/gi, "")
+      .replace(/\n+$/, "");
+  }
+
+  async function typeIntoContentEditable(element, value) {
     if (!element) return;
 
     simulatePointerActivation(element);
@@ -730,6 +737,33 @@
 
     document.execCommand("selectAll", false, null);
     sendBackspace(element);
+
+    await delay(20);
+
+    const tryWaitForClear = async () => {
+      try {
+        await waitForCondition(() => {
+          return getNormalizedEditorValue(element).length === 0 ? true : null;
+        }, 400);
+        return true;
+      } catch (error) {
+        return false;
+      }
+    };
+
+    const cleared = (getNormalizedEditorValue(element).length === 0) || (await tryWaitForClear());
+
+    if (!cleared) {
+      document.execCommand("selectAll", false, null);
+      const prevented = dispatchBeforeInput(element, "deleteContentBackward", null);
+      if (!prevented) {
+        document.execCommand("delete", false, null);
+        dispatchInput(element, "deleteContentBackward", null);
+      } else {
+        element.textContent = "";
+        dispatchInput(element, "deleteContentBackward", null);
+      }
+    }
 
     const segments = value.split(/\r?\n/);
     segments.forEach((segment, segmentIndex) => {
@@ -742,11 +776,8 @@
     });
 
     const expected = value.replace(/\r?\n/g, "\n");
-    const actual = (element.innerText || element.textContent || "")
-      .replace(/\r?\n/g, "\n")
-      .replace(/\u200b/gi, "");
     const normalizedExpected = expected.replace(/\n+$/, "");
-    const normalizedActual = actual.replace(/\n+$/, "");
+    let normalizedActual = getNormalizedEditorValue(element);
 
     if (normalizedActual !== normalizedExpected) {
       document.execCommand("selectAll", false, null);
@@ -754,7 +785,16 @@
       if (!prevented) {
         document.execCommand("insertText", false, expected);
         dispatchInput(element, "insertText", expected);
+      } else {
+        element.textContent = expected;
+        dispatchInput(element, "insertText", expected);
       }
+      await delay(20);
+      normalizedActual = getNormalizedEditorValue(element);
+    }
+
+    if (normalizedActual !== normalizedExpected) {
+      console.warn("KTutil: Editor text did not match expected value after typing.");
     }
 
     element.dispatchEvent(new Event("change", { bubbles: true }));
@@ -829,7 +869,7 @@
     }
 
     if (questionEditor) {
-      typeIntoContentEditable(questionEditor, data.question || "");
+      await typeIntoContentEditable(questionEditor, data.question || "");
     }
 
     let answerEditors = [];
@@ -844,9 +884,10 @@
       console.error("KTutil: Quiz answer editors not found.");
     }
 
-    answerEditors.slice(0, 4).forEach((editor, index) => {
-      typeIntoContentEditable(editor, data.answers[index] || "");
-    });
+    const usableEditors = answerEditors.slice(0, 4);
+    for (let index = 0; index < usableEditors.length; index += 1) {
+      await typeIntoContentEditable(usableEditors[index], data.answers[index] || "");
+    }
 
     let toggleButtons = [];
     try {
@@ -873,7 +914,7 @@
     }
 
     if (questionEditor) {
-      typeIntoContentEditable(questionEditor, data.question || "");
+      await typeIntoContentEditable(questionEditor, data.question || "");
     }
 
     let toggleButtons = [];
