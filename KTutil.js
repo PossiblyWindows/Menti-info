@@ -653,30 +653,49 @@
   }
 
   function dispatchBeforeInput(target, inputType, data) {
+    let event;
     try {
-      const event = new InputEvent("beforeinput", {
+      event = new InputEvent("beforeinput", {
         inputType,
         data,
         bubbles: true,
         cancelable: true
       });
+    } catch (error) {
+      event = document.createEvent("Event");
+      event.initEvent("beforeinput", true, true);
+      if (typeof inputType !== "undefined") {
+        try {
+          event.inputType = inputType;
+        } catch (_) {}
+      }
+      if (typeof data !== "undefined") {
+        try {
+          event.data = data;
+        } catch (_) {}
+      }
+    }
+
+    const dispatchResult = target.dispatchEvent(event);
+    return event.defaultPrevented || dispatchResult === false;
+  }
+
+  function dispatchInput(target, inputType, data) {
+    try {
+      const event = new InputEvent("input", { data, inputType, bubbles: true });
       target.dispatchEvent(event);
     } catch (error) {
-      target.dispatchEvent(new Event("beforeinput", { bubbles: true, cancelable: true }));
+      target.dispatchEvent(new Event("input", { bubbles: true }));
     }
   }
 
   function sendBackspace(target) {
     const meta = { key: "Backspace", code: "Backspace", keyCode: 8 };
     dispatchKeyboardEvent(target, "keydown", meta);
-    dispatchBeforeInput(target, "deleteContentBackward", null);
-    document.execCommand("delete", false, null);
-    try {
-      target.dispatchEvent(
-        new InputEvent("input", { data: null, inputType: "deleteContentBackward", bubbles: true })
-      );
-    } catch (error) {
-      target.dispatchEvent(new Event("input", { bubbles: true }));
+    const prevented = dispatchBeforeInput(target, "deleteContentBackward", null);
+    if (!prevented) {
+      document.execCommand("delete", false, null);
+      dispatchInput(target, "deleteContentBackward", null);
     }
     dispatchKeyboardEvent(target, "keyup", meta);
   }
@@ -688,24 +707,16 @@
       dispatchKeyboardEvent(target, "keypress", meta);
     }
     if (char === "\n") {
-      dispatchBeforeInput(target, "insertParagraph", null);
-      document.execCommand("insertText", false, "\n");
-      try {
-        target.dispatchEvent(
-          new InputEvent("input", { data: "\n", inputType: "insertParagraph", bubbles: true })
-        );
-      } catch (error) {
-        target.dispatchEvent(new Event("input", { bubbles: true }));
+      const prevented = dispatchBeforeInput(target, "insertParagraph", "\n");
+      if (!prevented) {
+        document.execCommand("insertText", false, "\n");
+        dispatchInput(target, "insertParagraph", "\n");
       }
     } else {
-      dispatchBeforeInput(target, "insertText", char);
-      document.execCommand("insertText", false, char);
-      try {
-        target.dispatchEvent(
-          new InputEvent("input", { data: char, inputType: "insertText", bubbles: true })
-        );
-      } catch (error) {
-        target.dispatchEvent(new Event("input", { bubbles: true }));
+      const prevented = dispatchBeforeInput(target, "insertText", char);
+      if (!prevented) {
+        document.execCommand("insertText", false, char);
+        dispatchInput(target, "insertText", char);
       }
     }
     dispatchKeyboardEvent(target, "keyup", meta);
@@ -739,14 +750,10 @@
 
     if (normalizedActual !== normalizedExpected) {
       document.execCommand("selectAll", false, null);
-      dispatchBeforeInput(element, "insertText", expected);
-      document.execCommand("insertText", false, expected);
-      try {
-        element.dispatchEvent(
-          new InputEvent("input", { data: expected, inputType: "insertText", bubbles: true })
-        );
-      } catch (error) {
-        element.dispatchEvent(new Event("input", { bubbles: true }));
+      const prevented = dispatchBeforeInput(element, "insertText", expected);
+      if (!prevented) {
+        document.execCommand("insertText", false, expected);
+        dispatchInput(element, "insertText", expected);
       }
     }
 
