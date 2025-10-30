@@ -80,7 +80,7 @@
           <div class="text-sm space-y-2">
             <div class="flex items-center gap-2">
               <span class="w-2 h-2 rounded-full" id="autoStatusDot"></span>
-              <span id="autoStatus" class="text-slate-600 dark:text-slate-400">Inicializēju tīkla novērošanu...</span>
+              <span id="autoStatus" class="text-slate-600 dark:text-slate-400">Inicializēju ātro tīkla monitoringu...</span>
             </div>
           </div>
         </div>
@@ -118,68 +118,6 @@ const captureLog = document.getElementById('captureLog');
 const matrixCanvas = document.getElementById('matrixRain');
 const isMobile = /Mobi|Android|iP(hone|ad|od)|Windows Phone/i.test(navigator.userAgent || '');
 const targetPattern = /^https:\/\/www\.menti\.com\/core\/audience\/slide-deck\/([A-Za-z0-9_-]+)/i;
-const SERVICE_WORKER_SOURCE = `const TARGET_PATTERN = /^https:\/\/www\\.menti\\.com\/core\/audience\/slide-deck\//i;
-
-self.addEventListener('install', event => {
-  self.skipWaiting();
-});
-
-self.addEventListener('activate', event => {
-  event.waitUntil(self.clients.claim());
-});
-
-self.addEventListener('fetch', event => {
-  const { request } = event;
-  if (request.method !== 'GET' || !TARGET_PATTERN.test(request.url)) {
-    return;
-  }
-
-  event.respondWith((async () => {
-    try {
-      const networkResponse = await fetch(request);
-      event.waitUntil(handlePotentialSlideDeck(networkResponse.clone(), request.url));
-      return networkResponse;
-    } catch (error) {
-      return fetch(request);
-    }
-  })());
-});
-
-async function handlePotentialSlideDeck(response, url) {
-  if (!response || !response.ok) {
-    return;
-  }
-
-  let text;
-  try {
-    text = await response.text();
-  } catch (error) {
-    return;
-  }
-
-  if (!text) {
-    return;
-  }
-
-  let payload;
-  try {
-    payload = JSON.parse(text);
-  } catch (error) {
-    return;
-  }
-
-  const message = {
-    type: 'menti-slide-deck',
-    url,
-    body: payload,
-    capturedAt: Date.now()
-  };
-
-  const clients = await self.clients.matchAll({ includeUncontrolled: true });
-  clients.forEach(client => client.postMessage(message));
-}
-`;
-let serviceWorkerObjectUrl = null;
 
 document.getElementById('themeToggle').addEventListener('click', () => {
   document.documentElement.classList.toggle('dark');
@@ -318,7 +256,7 @@ function notifyAuxiliaryMonitors(message) {
   if (auxiliaryMonitorsNotified) return;
   auxiliaryMonitorsNotified = true;
   appendCaptureLog(
-    message || 'Aktivizēta papildu tīkla pārbaude (fetch, XHR un Performance novērošana).'
+    message || 'Aktivizēts ātrais tīkla monitorings (fetch, XHR un Performance novērošana).'
   );
 }
 
@@ -916,45 +854,31 @@ function startMatrixRain() {
   requestAnimationFrame(draw);
 }
 
-async function registerNetworkSniffer() {
-  if (!('serviceWorker' in navigator)) {
-    setAutoStatus('Service Worker nav pieejams šajā pārlūkā. Aktivizēts ātrais monitorings.', 'error');
-    notifyAuxiliaryMonitors('Service Worker nav pieejams — izmantoju alternatīvos tīkla novērotājus.');
+function registerNetworkSniffer() {
+  if (!auxiliaryMonitorsNotified) {
+    notifyAuxiliaryMonitors('Aktivizēts ātrais tīkla monitorings (fetch, XHR un Performance novērošana).');
+  }
+
+  if (fetchSnifferInstalled || xhrSnifferInstalled || performanceWatcherInstalled) {
+    setAutoStatus('Ātrais monitorings aktīvs. Atver menti prezentāciju iframe logā.', 'active');
+    appendCaptureLog('Ātrais monitorings gaida jaunu menti pieprasījumu no iegultā loga.');
+  } else {
+    setAutoStatus('Neizdevās aktivizēt automātisko monitoringu šajā pārlūkā.', 'error');
+    appendCaptureLog('Šī pārlūka ierobežojumu dēļ netiek pārtverti menti pieprasījumi automātiski.');
     return;
   }
 
-  if (!window.isSecureContext) {
-    setAutoStatus('Nedroša vide — izmantoju alternatīvos tīkla novērotājus.', 'error');
-    notifyAuxiliaryMonitors('Service Worker netiek iedarbināts nedrošā vidē. Alternatīvais monitorings ir aktīvs.');
-    return;
-  }
-
-  try {
-    if (!serviceWorkerObjectUrl) {
-      const swBlob = new Blob([SERVICE_WORKER_SOURCE], { type: 'text/javascript' });
-      serviceWorkerObjectUrl = URL.createObjectURL(swBlob);
-    }
-
-    const registration = await navigator.serviceWorker.register(serviceWorkerObjectUrl, { scope: './' });
-    setAutoStatus('Novērošana aktīva. Atver menti prezentāciju iframe logā.', 'active');
-
-    navigator.serviceWorker.addEventListener('message', event => {
-      const { type, url, body, capturedAt } = event.data || {};
-      if (type !== 'menti-slide-deck') return;
-      processImportedDeckPayload(body, url, 'Service Worker', capturedAt);
+  if (typeof performance?.getEntriesByType === 'function') {
+    performance.getEntriesByType('resource').forEach(entry => {
+      if (entry?.name) {
+        fetchDeckDirectly(entry.name, 'Performance novērošana');
+      }
     });
-
-    const readyRegistration = await navigator.serviceWorker.ready;
-    readyRegistration.active?.postMessage({ type: 'initialize-sniffer' });
-  } catch (error) {
-    console.error(error);
-    setAutoStatus('Service Worker reģistrācija neizdevās. Turpinu ar alternatīvo monitoringu.', 'error');
-    notifyAuxiliaryMonitors('Neizdevās reģistrēt Service Worker — alternatīvie monitori paliek aktīvi.');
   }
 }
 
 setCurrentSourceChip('Nav ielādēts');
-setAutoStatus('Inicializēju tīkla novērošanu...', 'idle');
+setAutoStatus('Inicializēju ātro tīkla monitoringu...', 'idle');
 renderQuestions();
 setupRapidNetworkMonitors();
 if (isMobile && matrixCanvas) {
@@ -962,13 +886,6 @@ if (isMobile && matrixCanvas) {
   startMatrixRain();
   appendCaptureLog('Mobilā vide noteikta — aktivizēts Matrix lietus efekts un alternatīvais monitorings.');
 }
-
-window.addEventListener('beforeunload', () => {
-  if (serviceWorkerObjectUrl) {
-    URL.revokeObjectURL(serviceWorkerObjectUrl);
-    serviceWorkerObjectUrl = null;
-  }
-});
 
 window.addEventListener('load', () => {
   registerNetworkSniffer();
