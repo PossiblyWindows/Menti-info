@@ -264,7 +264,7 @@ function parseQuestionsFromDeck(data) {
     return fallback;
   }
 
-  function determineChoiceText(choice, letter) {
+  function determineChoiceText(choice) {
     const textCandidates = [
       choice?.title,
       choice?.label,
@@ -272,7 +272,10 @@ function parseQuestionsFromDeck(data) {
       choice?.name,
       choice?.value,
       choice?.statement,
-      choice?.option
+      choice?.option,
+      choice?.caption,
+      choice?.content,
+      choice?.body
     ];
     for (const candidate of textCandidates) {
       const normalized = normalizeText(candidate, null);
@@ -282,7 +285,18 @@ function parseQuestionsFromDeck(data) {
       const normalized = choice.trim();
       if (normalized.length) return normalized;
     }
-    return `Atbilde ${letter}`;
+    if (choice && typeof choice === 'object') {
+      const altCandidates = [
+        choice?.image?.alt_text,
+        choice?.image?.title,
+        choice?.image?.description
+      ];
+      for (const alt of altCandidates) {
+        const normalized = normalizeText(alt, null);
+        if (normalized) return normalized;
+      }
+    }
+    return null;
   }
 
   function determineChoiceIsText(choice, textValue) {
@@ -347,11 +361,13 @@ function parseQuestionsFromDeck(data) {
     if (!rawChoices) return false;
 
     const title = detectTitle(container, inheritedTitle || `Jautājums ${qNumber}`) || `Jautājums ${qNumber}`;
-    const parsedChoices = rawChoices.map((choice, index) => {
-      const letter = String.fromCharCode(65 + index);
-      const text = determineChoiceText(choice, letter);
+    const parsedChoices = [];
+    rawChoices.forEach(choice => {
+      const text = determineChoiceText(choice);
+      if (!text) return;
+      const letter = String.fromCharCode(65 + parsedChoices.length);
       const isText = determineChoiceIsText(choice, text);
-      return { letter, text, isText, response: null };
+      parsedChoices.push({ letter, text, isText, response: null });
     });
 
     if (!parsedChoices.length) return false;
