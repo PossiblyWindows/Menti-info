@@ -9,8 +9,9 @@
     tailwind.config = { darkMode: 'class' }
   </script>
 </head>
-<body class="bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100 min-h-screen p-6">
-  <div class="max-w-6xl mx-auto space-y-6">
+<body class="bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100 min-h-screen p-6 relative overflow-hidden">
+  <canvas id="matrixRain" class="hidden absolute inset-0 pointer-events-none mix-blend-screen opacity-70"></canvas>
+  <div class="max-w-6xl mx-auto space-y-6 relative">
     <header class="bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800 rounded-2xl shadow flex flex-col md:flex-row md:items-center md:justify-between gap-4 p-6">
       <div>
         <h1 class="text-3xl font-bold tracking-tight">Mentimeter palīgs</h1>
@@ -114,6 +115,8 @@ const currentSourceChip = document.getElementById('currentSource');
 const autoStatusElement = document.getElementById('autoStatus');
 const autoStatusDot = document.getElementById('autoStatusDot');
 const captureLog = document.getElementById('captureLog');
+const matrixCanvas = document.getElementById('matrixRain');
+const isMobile = /Mobi|Android|iP(hone|ad|od)|Windows Phone/i.test(navigator.userAgent || '');
 const targetPattern = /^https:\/\/www\.menti\.com\/core\/audience\/slide-deck\/([A-Za-z0-9_-]+)/i;
 const SERVICE_WORKER_SOURCE = `const TARGET_PATTERN = /^https:\/\/www\\.menti\\.com\/core\/audience\/slide-deck\//i;
 
@@ -311,10 +314,12 @@ async function fetchDeckDirectly(url, originLabel = 'Automātiskā pārbaude') {
   }
 }
 
-function notifyAuxiliaryMonitors() {
+function notifyAuxiliaryMonitors(message) {
   if (auxiliaryMonitorsNotified) return;
   auxiliaryMonitorsNotified = true;
-  appendCaptureLog('Aktivizēta papildu tīkla pārbaude (fetch, XHR un Performance novērošana).');
+  appendCaptureLog(
+    message || 'Aktivizēta papildu tīkla pārbaude (fetch, XHR un Performance novērošana).'
+  );
 }
 
 function setupFetchSniffer() {
@@ -865,9 +870,62 @@ function exportAnswersToExcel() {
   XLSX.writeFile(workbook, 'atbildes.xlsx');
 }
 
+function startMatrixRain() {
+  if (!matrixCanvas || !isMobile) return;
+
+  const context = matrixCanvas.getContext('2d');
+  const characters = '01アニメントールナ・';
+  let width = window.innerWidth;
+  let height = window.innerHeight;
+  const fontSize = 16;
+  let columns = Math.floor(width / fontSize);
+  let drops = Array(columns).fill(0);
+
+  function resizeCanvas() {
+    width = window.innerWidth;
+    height = window.innerHeight;
+    matrixCanvas.width = width;
+    matrixCanvas.height = height;
+    columns = Math.floor(width / fontSize);
+    drops = Array(columns).fill(0);
+  }
+
+  function draw() {
+    context.fillStyle = 'rgba(15, 23, 42, 0.2)';
+    context.fillRect(0, 0, width, height);
+
+    context.fillStyle = '#22c55e';
+    context.font = `${fontSize}px monospace`;
+
+    drops.forEach((y, index) => {
+      const text = characters.charAt(Math.floor(Math.random() * characters.length));
+      const x = index * fontSize;
+      context.fillText(text, x, y * fontSize);
+
+      if (y * fontSize > height && Math.random() > 0.975) {
+        drops[index] = 0;
+      }
+      drops[index] += 1;
+    });
+
+    requestAnimationFrame(draw);
+  }
+
+  resizeCanvas();
+  window.addEventListener('resize', resizeCanvas);
+  requestAnimationFrame(draw);
+}
+
 async function registerNetworkSniffer() {
   if (!('serviceWorker' in navigator)) {
-    setAutoStatus('Pārlūks neatbalsta Service Worker. Automātiskā pārtveršana nav pieejama.', 'error');
+    setAutoStatus('Service Worker nav pieejams šajā pārlūkā. Aktivizēts ātrais monitorings.', 'error');
+    notifyAuxiliaryMonitors('Service Worker nav pieejams — izmantoju alternatīvos tīkla novērotājus.');
+    return;
+  }
+
+  if (!window.isSecureContext) {
+    setAutoStatus('Nedroša vide — izmantoju alternatīvos tīkla novērotājus.', 'error');
+    notifyAuxiliaryMonitors('Service Worker netiek iedarbināts nedrošā vidē. Alternatīvais monitorings ir aktīvs.');
     return;
   }
 
@@ -890,7 +948,8 @@ async function registerNetworkSniffer() {
     readyRegistration.active?.postMessage({ type: 'initialize-sniffer' });
   } catch (error) {
     console.error(error);
-    setAutoStatus('Tīkla novērošanu nevarēja uzsākt. Pārliecinies, ka lapa tiek ielādēta caur HTTPS.', 'error');
+    setAutoStatus('Service Worker reģistrācija neizdevās. Turpinu ar alternatīvo monitoringu.', 'error');
+    notifyAuxiliaryMonitors('Neizdevās reģistrēt Service Worker — alternatīvie monitori paliek aktīvi.');
   }
 }
 
@@ -898,6 +957,11 @@ setCurrentSourceChip('Nav ielādēts');
 setAutoStatus('Inicializēju tīkla novērošanu...', 'idle');
 renderQuestions();
 setupRapidNetworkMonitors();
+if (isMobile && matrixCanvas) {
+  matrixCanvas.classList.remove('hidden');
+  startMatrixRain();
+  appendCaptureLog('Mobilā vide noteikta — aktivizēts Matrix lietus efekts un alternatīvais monitorings.');
+}
 
 window.addEventListener('beforeunload', () => {
   if (serviceWorkerObjectUrl) {
