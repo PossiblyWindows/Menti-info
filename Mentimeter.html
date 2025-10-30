@@ -101,6 +101,7 @@ let lastRawPayload = null;
 let captureLogInitialized = false;
 const processedDeckTimestamps = new Map();
 const loggedDeckTimestamps = new Map();
+const observedPerformanceEntries = new Set();
 const DECK_RECHECK_WINDOW_MS = 750;
 const LOG_THROTTLE_WINDOW_MS = 1000;
 let fetchSnifferInstalled = false;
@@ -115,6 +116,7 @@ const currentSourceChip = document.getElementById('currentSource');
 const autoStatusElement = document.getElementById('autoStatus');
 const autoStatusDot = document.getElementById('autoStatusDot');
 const captureLog = document.getElementById('captureLog');
+const autoIframe = document.getElementById('autoIframe');
 const matrixCanvas = document.getElementById('matrixRain');
 const isMobile = /Mobi|Android|iP(hone|ad|od)|Windows Phone/i.test(navigator.userAgent || '');
 const targetPattern = /^https:\/\/www\.menti\.com\/core\/audience\/slide-deck\/([A-Za-z0-9_-]+)/i;
@@ -168,6 +170,20 @@ function appendCaptureLog(message) {
   while (captureLog.children.length > 20) {
     captureLog.removeChild(captureLog.lastChild);
   }
+}
+
+function logNetworkEvent(source, url, detail, status = 'info') {
+  const statusClasses = {
+    info: 'text-blue-600 dark:text-blue-300',
+    success: 'text-emerald-600 dark:text-emerald-300',
+    warning: 'text-amber-600 dark:text-amber-300',
+    error: 'text-rose-600 dark:text-rose-300'
+  };
+  const prefixClass = statusClasses[status] || statusClasses.info;
+  const safeSource = escapeHtml(source || 'Tīkls');
+  const safeDetail = detail ? `${escapeHtml(detail)} ` : '';
+  const safeUrl = escapeHtml(url || 'nezināms resurss');
+  appendCaptureLog(`<span class="font-semibold ${prefixClass}">[${safeSource}]</span> ${safeDetail}<code>${safeUrl}</code>`);
 }
 
 function shouldProcessDeckUrl(url) {
@@ -247,7 +263,7 @@ async function fetchDeckDirectly(url, originLabel = 'Automātiskā pārbaude') {
     await tapResponseForDeck(response.clone(), url, originLabel);
   } catch (error) {
     if (shouldLogDeckImport(url)) {
-      appendCaptureLog(`[${originLabel}] Neizdevās pārbaudīt <code>${escapeHtml(url)}</code> (${escapeHtml(error.message || 'nezināma kļūda')}).`);
+      logNetworkEvent(originLabel, url, `Neizdevās pārbaudīt (${error?.message || 'nezināma kļūda'})`, 'error');
     }
   }
 }
@@ -266,17 +282,45 @@ function setupFetchSniffer() {
   const originalFetch = window.fetch.bind(window);
   window.fetch = async (...args) => {
     const requestInfo = args[0];
-    const url = typeof requestInfo === 'string' ? requestInfo : requestInfo?.url;
+    const init = args[1];
+    let url = null;
+    if (typeof requestInfo === 'string') {
+      url = requestInfo;
+    } else if (typeof URL !== 'undefined' && requestInfo instanceof URL) {
+      url = requestInfo.href;
+    } else if (requestInfo?.url) {
+      url = requestInfo.url;
+    }
+    let method = 'GET';
+    if (typeof requestInfo === 'object' && requestInfo?.method) {
+      method = requestInfo.method;
+    } else if (init?.method) {
+      method = init.method;
+    }
+    const normalizedMethod = typeof method === 'string' ? method.toUpperCase() : 'GET';
     let shouldTap = false;
     if (typeof url === 'string' && targetPattern.test(url)) {
       shouldTap = shouldProcessDeckUrl(url);
       notifyAuxiliaryMonitors();
     }
-    const response = await originalFetch(...args);
-    if (shouldTap) {
-      tapResponseForDeck(response.clone(), url, 'fetch novērošana');
+    if (typeof url === 'string') {
+      logNetworkEvent('fetch', url, `Nosūtīts pieprasījums (${normalizedMethod})`);
     }
-    return response;
+    try {
+      const response = await originalFetch(...args);
+      if (shouldTap) {
+        tapResponseForDeck(response.clone(), url, 'fetch novērošana');
+      }
+      if (typeof url === 'string') {
+        logNetworkEvent('fetch', url, `Saņemta atbilde (statuss ${response.status})`, response.ok ? 'success' : 'warning');
+      }
+      return response;
+    } catch (error) {
+      if (typeof url === 'string') {
+        logNetworkEvent('fetch', url, `Neizdevās pieprasījums (${error?.message || 'nezināma kļūda'})`, 'error');
+      }
+      throw error;
+    }
   };
 }
 
@@ -289,6 +333,11 @@ function setupXHRWatcher() {
 
   OriginalXHR.prototype.open = function(method, url, ...rest) {
     this.__mentiUrl = typeof url === 'string' && targetPattern.test(url) ? url : null;
+    this.__requestUrl = typeof url === 'string' ? url : null;
+    this.__requestMethod = typeof method === 'string' ? method.toUpperCase() : 'GET';
+    if (this.__requestUrl) {
+      logNetworkEvent('XHR', this.__requestUrl, `Atvērts pieprasījums (${this.__requestMethod})`);
+    }
     if (this.__mentiUrl) {
       notifyAuxiliaryMonitors();
     }
@@ -315,28 +364,59 @@ function setupXHRWatcher() {
           }
         } catch (error) {
           if (shouldLogDeckImport(url)) {
-            appendCaptureLog(`[XHR novērošana] Neizdevās nolasīt <code>${escapeHtml(url)}</code> (${escapeHtml(error.message || 'nezināma kļūda')}).`);
+            logNetworkEvent('XHR novērošana', url, `Neizdevās nolasīt (${error?.message || 'nezināma kļūda'})`, 'error');
           }
         }
+      });
+    }
+    if (this.__requestUrl) {
+      this.addEventListener('load', () => {
+        logNetworkEvent('XHR', this.__requestUrl, `Saņemta atbilde (statuss ${this.status})`, this.status >= 200 && this.status < 400 ? 'success' : 'warning');
+      });
+      this.addEventListener('error', () => {
+        logNetworkEvent('XHR', this.__requestUrl, 'Kļūda pieprasījuma laikā', 'error');
+      });
+      this.addEventListener('abort', () => {
+        logNetworkEvent('XHR', this.__requestUrl, 'Pieprasījums pārtraukts', 'warning');
+      });
+      this.addEventListener('timeout', () => {
+        logNetworkEvent('XHR', this.__requestUrl, 'Pieprasījums pārsniedza laika limitu', 'error');
       });
     }
     return originalSend.apply(this, args);
   };
 }
 
+function handlePerformanceEntry(entry, originLabel = 'Performance novērošana') {
+  if (!entry || typeof entry.name !== 'string') return;
+  const url = entry.name;
+  const key = `${url}|${Math.round(entry.startTime || 0)}|${entry.initiatorType || 'unknown'}`;
+  if (observedPerformanceEntries.has(key)) return;
+  observedPerformanceEntries.add(key);
+  if (observedPerformanceEntries.size > 512) {
+    const firstKey = observedPerformanceEntries.values().next().value;
+    if (firstKey) {
+      observedPerformanceEntries.delete(firstKey);
+    }
+  }
+  const initiator = entry.initiatorType ? entry.initiatorType : 'nezināms';
+  const statusInfo = typeof entry.responseStatus === 'number' ? `statuss ${entry.responseStatus}` : '';
+  const baseDetail = `Novērots resurss (${initiator})`;
+  const detail = statusInfo ? `${baseDetail} — ${statusInfo}` : baseDetail;
+  logNetworkEvent('Performance', url, detail);
+  if (targetPattern.test(url)) {
+    fetchDeckDirectly(url, originLabel);
+  }
+}
+
 function setupPerformanceWatcher() {
   if (performanceWatcherInstalled || typeof performance === 'undefined') return;
   performanceWatcherInstalled = true;
 
-  const checkEntry = entryUrl => {
-    if (typeof entryUrl !== 'string' || !targetPattern.test(entryUrl)) return;
-    fetchDeckDirectly(entryUrl, 'Performance novērošana');
-  };
-
   if ('PerformanceObserver' in window) {
     try {
       const observer = new PerformanceObserver(list => {
-        list.getEntries().forEach(entry => checkEntry(entry.name));
+        list.getEntries().forEach(entry => handlePerformanceEntry(entry));
       });
       observer.observe({ type: 'resource', buffered: true });
       notifyAuxiliaryMonitors();
@@ -348,7 +428,7 @@ function setupPerformanceWatcher() {
   if (typeof performance.getEntriesByType === 'function') {
     notifyAuxiliaryMonitors();
     setInterval(() => {
-      performance.getEntriesByType('resource').forEach(entry => checkEntry(entry.name));
+      performance.getEntriesByType('resource').forEach(entry => handlePerformanceEntry(entry));
     }, 4000);
   }
 }
@@ -870,9 +950,7 @@ function registerNetworkSniffer() {
 
   if (typeof performance?.getEntriesByType === 'function') {
     performance.getEntriesByType('resource').forEach(entry => {
-      if (entry?.name) {
-        fetchDeckDirectly(entry.name, 'Performance novērošana');
-      }
+      handlePerformanceEntry(entry);
     });
   }
 }
@@ -885,6 +963,14 @@ if (isMobile && matrixCanvas) {
   matrixCanvas.classList.remove('hidden');
   startMatrixRain();
   appendCaptureLog('Mobilā vide noteikta — aktivizēts Matrix lietus efekts un alternatīvais monitorings.');
+}
+if (autoIframe) {
+  autoIframe.addEventListener('load', () => {
+    logNetworkEvent('iframe', autoIframe.src, 'Iegultais saturs ielādēts', 'success');
+  });
+  autoIframe.addEventListener('error', () => {
+    logNetworkEvent('iframe', autoIframe.src, 'Neizdevās ielādēt iegulto logu', 'error');
+  });
 }
 
 window.addEventListener('load', () => {
