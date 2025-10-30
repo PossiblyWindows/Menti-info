@@ -4,248 +4,978 @@
   <meta charset="UTF-8">
   <title>Mentimeter Jautājumi</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script>
     tailwind.config = { darkMode: 'class' }
   </script>
 </head>
-<body class="bg-gray-100 text-gray-900 dark:bg-gray-900 dark:text-gray-100 min-h-screen p-6">
-  <div class="max-w-4xl mx-auto">
-    <div class="flex justify-between items-center mb-6">
-      <h1 class="text-3xl font-bold">Mentimeter Jautājumi</h1>
-      <button id="themeToggle" class="px-3 py-2 bg-gray-300 dark:bg-gray-700 rounded-lg">🌙/☀️</button>
-    </div>
+<body class="bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100 min-h-screen p-6 relative overflow-hidden">
+  <canvas id="matrixRain" class="hidden absolute inset-0 pointer-events-none mix-blend-screen opacity-70"></canvas>
+  <div class="max-w-6xl mx-auto space-y-6 relative">
+    <header class="bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800 rounded-2xl shadow flex flex-col md:flex-row md:items-center md:justify-between gap-4 p-6">
+      <div>
+        <h1 class="text-3xl font-bold tracking-tight">Mentimeter palīgs</h1>
+        <p class="text-sm text-slate-600 dark:text-slate-400">Ielādē jautājumus manuāli vai pārtver tos automātiski no radioswh.lv/gudraks.</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="px-3 py-1 text-xs font-semibold bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200 rounded-full" id="currentSource">Nav ielādēts</span>
+        <button id="themeToggle" class="px-3 py-2 bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 rounded-xl transition">🌙/☀️</button>
+      </div>
+    </header>
 
-    <!-- JSON editor -->
-    <div class="mb-6 space-y-3">
-      <label class="block text-sm">Ievadi vai ielādē JSON:</label>
-      <textarea id="jsonInput" class="w-full h-40 p-3 rounded-lg bg-gray-200 dark:bg-gray-800 border border-gray-300 dark:border-gray-700" placeholder="Ielīmē šeit mentimeter_questions.json saturu..."></textarea>
-      <input type="file" id="fileInput" accept=".json,.txt" class="block w-full text-sm text-gray-700 dark:text-gray-300">
-      <button onclick="loadQuestions()" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg">Parādīt jautājumus</button>
-    </div>
+    <div class="grid gap-6 xl:grid-cols-[1.2fr_minmax(0,1fr)]">
+      <section class="space-y-6">
+        <div class="bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800 rounded-2xl shadow p-6 space-y-4">
+          <div class="flex items-start justify-between gap-4">
+            <div>
+              <h2 class="text-xl font-semibold">Manuāla ielāde</h2>
+              <p class="text-sm text-slate-600 dark:text-slate-400">Ielīmē JSON saturu vai augšupielādē failu, lai apskatītu jautājumus.</p>
+            </div>
+            <span class="text-xs font-medium px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-800">JSON</span>
+          </div>
+          <label class="block text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Ievadi vai ielādē JSON:</label>
+          <textarea id="jsonInput" class="w-full h-44 p-3 rounded-xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 focus:ring-2 focus:ring-blue-500 outline-none transition text-sm" placeholder="Ielīmē šeit mentimeter_questions.json saturu..."></textarea>
+          <div class="flex flex-col sm:flex-row gap-3">
+            <input type="file" id="fileInput" accept=".json,.txt" class="block w-full text-sm text-slate-700 dark:text-slate-300 file:mr-4 file:rounded-lg file:border-0 file:bg-blue-50 file:px-4 file:py-2 file:text-blue-600 hover:file:bg-blue-100">
+            <button onclick="loadQuestions()" class="w-full sm:w-auto px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-xl text-white font-semibold transition">Parādīt jautājumus</button>
+          </div>
+        </div>
 
-    <!-- Quiz container -->
-    <div id="quizContainer" class="space-y-6"></div>
+        <div class="bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800 rounded-2xl shadow p-6">
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-xl font-semibold">Jautājumu saraksts</h2>
+            <span id="questionsCounter" class="text-sm text-slate-500 dark:text-slate-400">0 jautājumi</span>
+          </div>
+          <div id="quizContainer" class="space-y-5"></div>
+        </div>
 
-    <!-- Export controls -->
-    <div class="mt-8 p-4 bg-gray-200 dark:bg-gray-800 rounded-lg shadow space-y-3">
-      <h2 class="text-xl font-semibold">Eksportēt atbildes</h2>
-      <select id="exportMode" class="bg-gray-100 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-lg p-2 w-full">
-        <option value="letters">Tikai burti (A, B, C...)</option>
-        <option value="question-letter">Jautājums + burts</option>
-        <option value="questions">Tikai jautājumi</option>
-        <option value="detailed">Pilns formāts ar tekstu laukiem</option>
-      </select>
-      <button onclick="exportAnswers()" class="px-4 py-2 bg-green-600 hover:bg-green-500 rounded-lg w-full">Lejupielādēt TXT</button>
+        <div class="bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800 rounded-2xl shadow p-6 space-y-4">
+          <h2 class="text-xl font-semibold">Eksportēt atbildes</h2>
+          <p class="text-sm text-slate-600 dark:text-slate-400">Izvēlies formātu un eksportē atlasītās atbildes uz failu.</p>
+          <select id="exportMode" class="bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl p-2 text-sm w-full focus:ring-2 focus:ring-blue-500 outline-none transition">
+            <option value="letters">Tikai burti (A, B, C...)</option>
+            <option value="question-letter">Jautājums + burts</option>
+            <option value="questions">Tikai jautājumi</option>
+            <option value="detailed">Pilns formāts ar tekstu laukiem</option>
+          </select>
+          <div class="flex flex-col sm:flex-row gap-3">
+            <button onclick="exportAnswers()" class="w-full sm:w-auto px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-xl text-white font-semibold transition">Lejupielādēt TXT</button>
+            <button onclick="exportAnswersToExcel()" class="w-full sm:w-auto px-4 py-2 bg-amber-500 hover:bg-amber-400 rounded-xl text-white font-semibold transition">Lejupielādēt Excel</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="space-y-6">
+        <div class="bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800 rounded-2xl shadow p-6 space-y-4">
+          <div class="flex items-start justify-between gap-4">
+            <div>
+              <h2 class="text-xl font-semibold">Automātiska ielāde</h2>
+              <p class="text-sm text-slate-600 dark:text-slate-400">Atver radioswh.lv/gudraks zemāk redzamajā logā, lai pieprasījumi uz menti.com tiktu nolasīti automātiski.</p>
+            </div>
+            <span class="text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200">Beta</span>
+          </div>
+          <div class="rounded-xl border border-dashed border-slate-300 dark:border-slate-700 overflow-hidden">
+            <iframe id="autoIframe" src="https://radioswh.lv/gudraks" title="radioswh.lv/gudraks" class="w-full h-96 bg-white" sandbox="allow-scripts allow-forms allow-same-origin"></iframe>
+          </div>
+          <div class="text-sm space-y-2">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full" id="autoStatusDot"></span>
+              <span id="autoStatus" class="text-slate-600 dark:text-slate-400">Inicializēju ātro tīkla monitoringu...</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800 rounded-2xl shadow p-6 space-y-3">
+          <h3 class="text-lg font-semibold">Pārtveršanas notikumi</h3>
+          <ul id="captureLog" class="text-xs text-slate-600 dark:text-slate-400 space-y-2 max-h-64 overflow-y-auto">
+            <li class="italic text-slate-500">Nav pārtvertu pieprasījumu.</li>
+          </ul>
+        </div>
+      </section>
     </div>
   </div>
 
 <script>
 let questionsData = [];
+let lastRawPayload = null;
+let captureLogInitialized = false;
+const processedDeckTimestamps = new Map();
+const loggedDeckTimestamps = new Map();
+const observedPerformanceEntries = new Set();
+const DECK_RECHECK_WINDOW_MS = 750;
+const LOG_THROTTLE_WINDOW_MS = 1000;
+let fetchSnifferInstalled = false;
+let xhrSnifferInstalled = false;
+let performanceWatcherInstalled = false;
+let auxiliaryMonitorsNotified = false;
 
-// Dark mode toggle
-document.getElementById("themeToggle").addEventListener("click", () => {
-  document.documentElement.classList.toggle("dark");
+const jsonInput = document.getElementById('jsonInput');
+const quizContainer = document.getElementById('quizContainer');
+const questionsCounter = document.getElementById('questionsCounter');
+const currentSourceChip = document.getElementById('currentSource');
+const autoStatusElement = document.getElementById('autoStatus');
+const autoStatusDot = document.getElementById('autoStatusDot');
+const captureLog = document.getElementById('captureLog');
+const autoIframe = document.getElementById('autoIframe');
+const matrixCanvas = document.getElementById('matrixRain');
+const isMobile = /Mobi|Android|iP(hone|ad|od)|Windows Phone/i.test(navigator.userAgent || '');
+const targetPattern = /^https:\/\/www\.menti\.com\/core\/audience\/slide-deck\/([A-Za-z0-9_-]+)/i;
+
+document.getElementById('themeToggle').addEventListener('click', () => {
+  document.documentElement.classList.toggle('dark');
 });
 
-// File upload
-document.getElementById("fileInput").addEventListener("change", function(event) {
-  const file = event.target.files[0];
+document.getElementById('fileInput').addEventListener('change', event => {
+  const file = event.target.files?.[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = e => document.getElementById("jsonInput").value = e.target.result;
+  reader.onload = e => {
+    const result = e.target?.result;
+    if (typeof result === 'string') {
+      jsonInput.value = result;
+    }
+  };
   reader.readAsText(file);
 });
 
-function loadQuestions() {
-  const input = document.getElementById("jsonInput").value;
-  let data;
+function setCurrentSourceChip(label, variant = 'neutral') {
+  const variants = {
+    neutral: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200',
+    manual: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-200',
+    auto: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200'
+  };
+  currentSourceChip.className = `px-3 py-1 text-xs font-semibold rounded-full ${variants[variant] || variants.neutral}`;
+  currentSourceChip.textContent = label;
+}
+
+function setAutoStatus(message, status = 'idle') {
+  const dotClasses = {
+    idle: 'bg-slate-400',
+    active: 'bg-emerald-500',
+    error: 'bg-rose-500'
+  };
+  autoStatusElement.textContent = message;
+  autoStatusDot.className = `w-2 h-2 rounded-full ${dotClasses[status] || dotClasses.idle}`;
+}
+
+function appendCaptureLog(message) {
+  if (!captureLogInitialized) {
+    captureLog.innerHTML = '';
+    captureLogInitialized = true;
+  }
+  const time = new Date().toLocaleTimeString('lv-LV');
+  const item = document.createElement('li');
+  item.innerHTML = `<span class="font-semibold text-slate-700 dark:text-slate-200">${time}</span> — ${message}`;
+  captureLog.prepend(item);
+  while (captureLog.children.length > 20) {
+    captureLog.removeChild(captureLog.lastChild);
+  }
+}
+
+function logNetworkEvent(source, url, detail, status = 'info') {
+  const statusClasses = {
+    info: 'text-blue-600 dark:text-blue-300',
+    success: 'text-emerald-600 dark:text-emerald-300',
+    warning: 'text-amber-600 dark:text-amber-300',
+    error: 'text-rose-600 dark:text-rose-300'
+  };
+  const prefixClass = statusClasses[status] || statusClasses.info;
+  const safeSource = escapeHtml(source || 'Tīkls');
+  const safeDetail = detail ? `${escapeHtml(detail)} ` : '';
+  const safeUrl = escapeHtml(url || 'nezināms resurss');
+  appendCaptureLog(`<span class="font-semibold ${prefixClass}">[${safeSource}]</span> ${safeDetail}<code>${safeUrl}</code>`);
+}
+
+function shouldProcessDeckUrl(url) {
+  if (!url) return false;
+  const now = Date.now();
+  const previous = processedDeckTimestamps.get(url);
+  if (previous && now - previous < DECK_RECHECK_WINDOW_MS) {
+    return false;
+  }
+  processedDeckTimestamps.set(url, now);
+  return true;
+}
+
+function markDeckProcessed(url) {
+  if (!url) return;
+  processedDeckTimestamps.set(url, Date.now());
+}
+
+function shouldLogDeckImport(url) {
+  if (!url) return true;
+  const now = Date.now();
+  const previous = loggedDeckTimestamps.get(url);
+  if (previous && now - previous < LOG_THROTTLE_WINDOW_MS) {
+    return false;
+  }
+  loggedDeckTimestamps.set(url, now);
+  return true;
+}
+
+function processImportedDeckPayload(payload, url, originLabel, capturedAt) {
+  if (!payload) return null;
+
+  if (url) {
+    markDeckProcessed(url);
+  }
+
+  const result = handleAutoImport(payload);
+  const match = typeof url === 'string' ? targetPattern.exec(url) : null;
+  const deckId = escapeHtml(match?.[1] || 'nezināms');
+  const safeUrl = escapeHtml(url || '');
+  const labelPrefix = originLabel ? `[${originLabel}] ` : '';
+
+  if (result?.success) {
+    if (shouldLogDeckImport(url)) {
+      appendCaptureLog(`${labelPrefix}Pārtverts <code>${deckId}</code> pieprasījums (${safeUrl}). Importēti ${result.questionCount} jautājumi.`);
+    }
+    if (capturedAt) {
+      setCurrentSourceChip(`Automātiski • ${new Date(capturedAt).toLocaleTimeString('lv-LV')}`, 'auto');
+    }
+  } else if (shouldLogDeckImport(url)) {
+    appendCaptureLog(`${labelPrefix}Pārtverts <code>${deckId}</code> pieprasījums (${safeUrl}), bet neizdevās automātiski nolasīt jautājumus.`);
+  }
+
+  return result;
+}
+
+async function tapResponseForDeck(response, url, originLabel) {
+  if (!response || !url) return;
   try {
-    data = JSON.parse(input);
-  } catch (err) {
-    alert("JSON formāts nav pareizs!");
-    return;
+    const text = await response.text();
+    if (!text?.length) return;
+    const payload = JSON.parse(text);
+    processImportedDeckPayload(payload, url, originLabel);
+  } catch (error) {
+    console.error('Neizdevās analizēt pārtverto pieprasījumu.', error);
   }
-  if (!data.slide_deck || !data.slide_deck.slides) {
-    alert("Nav atrasti jautājumi JSON failā.");
-    return;
+}
+
+async function fetchDeckDirectly(url, originLabel = 'Automātiskā pārbaude') {
+  if (!shouldProcessDeckUrl(url)) return;
+  try {
+    setAutoStatus('Pārbaudu menti pieprasījumus...', 'active');
+    const response = await fetch(url, { credentials: 'include' });
+    if (!response.ok) {
+      throw new Error(`Statuss ${response.status}`);
+    }
+    await tapResponseForDeck(response.clone(), url, originLabel);
+  } catch (error) {
+    if (shouldLogDeckImport(url)) {
+      logNetworkEvent(originLabel, url, `Neizdevās pārbaudīt (${error?.message || 'nezināma kļūda'})`, 'error');
+    }
   }
+}
 
-  questionsData = [];
-  const container = document.getElementById("quizContainer");
-  container.innerHTML = "";
+function notifyAuxiliaryMonitors(message) {
+  if (auxiliaryMonitorsNotified) return;
+  auxiliaryMonitorsNotified = true;
+  appendCaptureLog(
+    message || 'Aktivizēts ātrais tīkla monitorings (fetch, XHR un Performance novērošana).'
+  );
+}
 
-  let qNumber = 1;
+function setupFetchSniffer() {
+  if (fetchSnifferInstalled || typeof window.fetch !== 'function') return;
+  fetchSnifferInstalled = true;
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = async (...args) => {
+    const requestInfo = args[0];
+    const init = args[1];
+    let url = null;
+    if (typeof requestInfo === 'string') {
+      url = requestInfo;
+    } else if (typeof URL !== 'undefined' && requestInfo instanceof URL) {
+      url = requestInfo.href;
+    } else if (requestInfo?.url) {
+      url = requestInfo.url;
+    }
+    let method = 'GET';
+    if (typeof requestInfo === 'object' && requestInfo?.method) {
+      method = requestInfo.method;
+    } else if (init?.method) {
+      method = init.method;
+    }
+    const normalizedMethod = typeof method === 'string' ? method.toUpperCase() : 'GET';
+    let shouldTap = false;
+    if (typeof url === 'string' && targetPattern.test(url)) {
+      shouldTap = shouldProcessDeckUrl(url);
+      notifyAuxiliaryMonitors();
+    }
+    if (typeof url === 'string') {
+      logNetworkEvent('fetch', url, `Nosūtīts pieprasījums (${normalizedMethod})`);
+    }
+    try {
+      const response = await originalFetch(...args);
+      if (shouldTap) {
+        tapResponseForDeck(response.clone(), url, 'fetch novērošana');
+      }
+      if (typeof url === 'string') {
+        logNetworkEvent('fetch', url, `Saņemta atbilde (statuss ${response.status})`, response.ok ? 'success' : 'warning');
+      }
+      return response;
+    } catch (error) {
+      if (typeof url === 'string') {
+        logNetworkEvent('fetch', url, `Neizdevās pieprasījums (${error?.message || 'nezināma kļūda'})`, 'error');
+      }
+      throw error;
+    }
+  };
+}
 
-  data.slide_deck.slides.forEach(slide => {
-    if (slide.interactive_contents && slide.interactive_contents.length > 0) {
-      slide.interactive_contents.forEach(content => {
-        if (content.choices && content.choices.length > 0) {
-          const q = {
-            number: qNumber,
-            title: slide.title || `Jautājums ${qNumber}`,
-            choices: content.choices.map((c, i) => ({
-              letter: String.fromCharCode(65 + i),
-              text: c.title,
-              type: (c.title.includes("telefona numuru") || c.title.includes("vecums")) ? "text" : "radio",
-              answer: null
-            }))
-          };
-          questionsData.push(q);
+function setupXHRWatcher() {
+  if (xhrSnifferInstalled || typeof window.XMLHttpRequest !== 'function') return;
+  xhrSnifferInstalled = true;
+  const OriginalXHR = window.XMLHttpRequest;
+  const originalOpen = OriginalXHR.prototype.open;
+  const originalSend = OriginalXHR.prototype.send;
 
-          // Render UI
-          const div = document.createElement("div");
-          div.className = "p-5 bg-white dark:bg-gray-800 rounded-lg shadow";
+  OriginalXHR.prototype.open = function(method, url, ...rest) {
+    this.__mentiUrl = typeof url === 'string' && targetPattern.test(url) ? url : null;
+    this.__requestUrl = typeof url === 'string' ? url : null;
+    this.__requestMethod = typeof method === 'string' ? method.toUpperCase() : 'GET';
+    if (this.__requestUrl) {
+      logNetworkEvent('XHR', this.__requestUrl, `Atvērts pieprasījums (${this.__requestMethod})`);
+    }
+    if (this.__mentiUrl) {
+      notifyAuxiliaryMonitors();
+    }
+    return originalOpen.apply(this, [method, url, ...rest]);
+  };
 
-          const title = document.createElement("h2");
-          title.className = "text-lg font-semibold mb-3";
-          title.textContent = `${q.number}. ${q.title}`;
-          div.appendChild(title);
-
-          const optionsDiv = document.createElement("div");
-          optionsDiv.className = "space-y-2";
-
-          q.choices.forEach(choice => {
-            const block = document.createElement("div");
-
-            const label = document.createElement("div");
-            label.className = "font-medium";
-            label.textContent = `${choice.letter}) ${choice.text}`;
-            block.appendChild(label);
-
-            if (choice.type === "radio") {
-              const input = document.createElement("input");
-              input.type = "radio";
-              input.name = "q" + q.number;
-              input.value = choice.letter;
-              input.className = "mt-1";
-              input.onchange = () => q.choices.forEach(c => c.answer = (c.letter === choice.letter ? choice.letter : null));
-              block.appendChild(input);
-            } else {
-              const input = document.createElement("input");
-              input.type = "text";
-              input.placeholder = "Ieraksti savu atbildi...";
-              input.className = "mt-2 w-full p-2 rounded bg-gray-100 dark:bg-gray-700";
-              input.oninput = () => choice.answer = input.value;
-              block.appendChild(input);
+  OriginalXHR.prototype.send = function(...args) {
+    if (this.__mentiUrl) {
+      const url = this.__mentiUrl;
+      const shouldTap = shouldProcessDeckUrl(url);
+      this.addEventListener('load', () => {
+        if (!shouldTap) return;
+        try {
+          let payload = null;
+          if (!this.responseType || this.responseType === 'text') {
+            if (this.responseText) {
+              payload = JSON.parse(this.responseText);
             }
-
-            optionsDiv.appendChild(block);
-          });
-
-          div.appendChild(optionsDiv);
-          container.appendChild(div);
-
-          qNumber++;
+          } else if (this.responseType === 'json') {
+            payload = this.response;
+          }
+          if (payload) {
+            processImportedDeckPayload(payload, url, 'XHR novērošana');
+          }
+        } catch (error) {
+          if (shouldLogDeckImport(url)) {
+            logNetworkEvent('XHR novērošana', url, `Neizdevās nolasīt (${error?.message || 'nezināma kļūda'})`, 'error');
+          }
         }
       });
     }
+    if (this.__requestUrl) {
+      this.addEventListener('load', () => {
+        logNetworkEvent('XHR', this.__requestUrl, `Saņemta atbilde (statuss ${this.status})`, this.status >= 200 && this.status < 400 ? 'success' : 'warning');
+      });
+      this.addEventListener('error', () => {
+        logNetworkEvent('XHR', this.__requestUrl, 'Kļūda pieprasījuma laikā', 'error');
+      });
+      this.addEventListener('abort', () => {
+        logNetworkEvent('XHR', this.__requestUrl, 'Pieprasījums pārtraukts', 'warning');
+      });
+      this.addEventListener('timeout', () => {
+        logNetworkEvent('XHR', this.__requestUrl, 'Pieprasījums pārsniedza laika limitu', 'error');
+      });
+    }
+    return originalSend.apply(this, args);
+  };
+}
+
+function handlePerformanceEntry(entry, originLabel = 'Performance novērošana') {
+  if (!entry || typeof entry.name !== 'string') return;
+  const url = entry.name;
+  const key = `${url}|${Math.round(entry.startTime || 0)}|${entry.initiatorType || 'unknown'}`;
+  if (observedPerformanceEntries.has(key)) return;
+  observedPerformanceEntries.add(key);
+  if (observedPerformanceEntries.size > 512) {
+    const firstKey = observedPerformanceEntries.values().next().value;
+    if (firstKey) {
+      observedPerformanceEntries.delete(firstKey);
+    }
+  }
+  const initiator = entry.initiatorType ? entry.initiatorType : 'nezināms';
+  const statusInfo = typeof entry.responseStatus === 'number' ? `statuss ${entry.responseStatus}` : '';
+  const baseDetail = `Novērots resurss (${initiator})`;
+  const detail = statusInfo ? `${baseDetail} — ${statusInfo}` : baseDetail;
+  logNetworkEvent('Performance', url, detail);
+  if (targetPattern.test(url)) {
+    fetchDeckDirectly(url, originLabel);
+  }
+}
+
+function setupPerformanceWatcher() {
+  if (performanceWatcherInstalled || typeof performance === 'undefined') return;
+  performanceWatcherInstalled = true;
+
+  if ('PerformanceObserver' in window) {
+    try {
+      const observer = new PerformanceObserver(list => {
+        list.getEntries().forEach(entry => handlePerformanceEntry(entry));
+      });
+      observer.observe({ type: 'resource', buffered: true });
+      notifyAuxiliaryMonitors();
+    } catch (error) {
+      console.warn('PerformanceObserver nav pieejams pilnai funkcionalitātei.', error);
+    }
+  }
+
+  if (typeof performance.getEntriesByType === 'function') {
+    notifyAuxiliaryMonitors();
+    setInterval(() => {
+      performance.getEntriesByType('resource').forEach(entry => handlePerformanceEntry(entry));
+    }, 4000);
+  }
+}
+
+function setupRapidNetworkMonitors() {
+  setupFetchSniffer();
+  setupXHRWatcher();
+  setupPerformanceWatcher();
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function parseQuestionsFromDeck(data) {
+  if (!data) return [];
+
+  const questions = [];
+  let qNumber = 1;
+  const visited = new WeakSet();
+
+  const choiceKeys = ['choices', 'options', 'alternatives', 'answers'];
+  const titleKeys = ['title', 'question', 'heading', 'name', 'label', 'question_text', 'text'];
+
+  function normalizeText(value, fallback) {
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed.length) return trimmed;
+    }
+    if (Array.isArray(value)) {
+      const joined = value.map(part => (typeof part === 'string' ? part.trim() : '')).filter(Boolean).join(' ');
+      if (joined.length) return joined;
+    }
+    return fallback;
+  }
+
+  function detectTitle(node, fallback) {
+    if (!node || typeof node !== 'object') return fallback;
+    for (const key of titleKeys) {
+      if (key in node) {
+        const value = node[key];
+        const normalized = normalizeText(value, null);
+        if (normalized) return normalized;
+      }
+    }
+    return fallback;
+  }
+
+  function determineChoiceText(choice) {
+    const textCandidates = [
+      choice?.title,
+      choice?.label,
+      choice?.text,
+      choice?.name,
+      choice?.value,
+      choice?.statement,
+      choice?.option,
+      choice?.caption,
+      choice?.content,
+      choice?.body
+    ];
+    for (const candidate of textCandidates) {
+      const normalized = normalizeText(candidate, null);
+      if (normalized) return normalized;
+    }
+    if (typeof choice === 'string') {
+      const normalized = choice.trim();
+      if (normalized.length) return normalized;
+    }
+    if (choice && typeof choice === 'object') {
+      const altCandidates = [
+        choice?.image?.alt_text,
+        choice?.image?.title,
+        choice?.image?.description
+      ];
+      for (const alt of altCandidates) {
+        const normalized = normalizeText(alt, null);
+        if (normalized) return normalized;
+      }
+    }
+    return null;
+  }
+
+  function determineChoiceIsText(choice, textValue) {
+    if (!choice || typeof choice !== 'object') {
+      return /ieraksti|teksts|uzraksti/i.test(textValue || '');
+    }
+
+    const flags = [
+      choice?.type,
+      choice?.input_type,
+      choice?.value_type,
+      choice?.question_type,
+      choice?.result_type,
+      choice?.presentation_type
+    ];
+    const joinedFlags = flags.filter(Boolean).join(' ').toLowerCase();
+    if (/[\s_-](text|input|open|wordcloud)/.test(joinedFlags)) return true;
+
+    if (choice?.allow_free_text || choice?.allow_text || choice?.is_text || choice?.isOpen || choice?.open) {
+      return true;
+    }
+
+    return /telefona numuru|vecums|ieraksti|teksts|ievadi/i.test(textValue || '');
+  }
+
+  function looksLikeChoiceItem(value) {
+    if (typeof value === 'string') {
+      return Boolean(value.trim());
+    }
+    if (!value || typeof value !== 'object') {
+      return false;
+    }
+    const indicativeKeys = [
+      'interactive_content_choice_id',
+      'title',
+      'label',
+      'text',
+      'name',
+      'value',
+      'statement',
+      'option'
+    ];
+    return indicativeKeys.some(key => {
+      const candidate = value[key];
+      return typeof candidate === 'string' ? candidate.trim().length > 0 : false;
+    });
+  }
+
+  function extractChoices(container) {
+    if (!container || typeof container !== 'object') return null;
+    for (const key of choiceKeys) {
+      const value = container[key];
+      if (Array.isArray(value) && value.length && value.some(looksLikeChoiceItem)) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  function addQuestion(container, inheritedTitle) {
+    const rawChoices = extractChoices(container);
+    if (!rawChoices) return false;
+
+    const title = detectTitle(container, inheritedTitle || `Jautājums ${qNumber}`) || `Jautājums ${qNumber}`;
+    const parsedChoices = [];
+    rawChoices.forEach(choice => {
+      const text = determineChoiceText(choice);
+      if (!text) return;
+      const letter = String.fromCharCode(65 + parsedChoices.length);
+      const isText = determineChoiceIsText(choice, text);
+      parsedChoices.push({ letter, text, isText, response: null });
+    });
+
+    if (!parsedChoices.length) return false;
+
+    questions.push({
+      number: qNumber,
+      title,
+      choices: parsedChoices
+    });
+
+    qNumber += 1;
+    return true;
+  }
+
+  function traverse(node, inheritedTitle) {
+    if (!node || typeof node !== 'object') return;
+    if (visited.has(node)) return;
+    visited.add(node);
+
+    if (addQuestion(node, inheritedTitle)) return;
+
+    const nextTitle = detectTitle(node, inheritedTitle);
+
+    if (Array.isArray(node)) {
+      node.forEach(item => traverse(item, inheritedTitle));
+      return;
+    }
+
+    Object.entries(node).forEach(([key, value]) => {
+      if (!value || typeof value !== 'object') return;
+      const keyIsTitle = /title|question|heading|label/i.test(key);
+      const propagatedTitle = keyIsTitle ? detectTitle({ [key]: value }, nextTitle) : nextTitle;
+      traverse(value, propagatedTitle);
+    });
+  }
+
+  const entryCandidates = [];
+  if (Array.isArray(data)) {
+    entryCandidates.push(...data);
+  } else {
+    entryCandidates.push(
+      data.slide_deck,
+      data.deck,
+      data.slides,
+      data.questions,
+      data
+    );
+  }
+
+  entryCandidates.filter(Boolean).forEach(candidate => traverse(candidate, null));
+
+  return questions;
+}
+
+function renderQuestions() {
+  quizContainer.innerHTML = '';
+
+  if (!questionsData.length) {
+    const emptyState = document.createElement('p');
+    emptyState.className = 'text-sm text-slate-500 dark:text-slate-400 italic';
+    emptyState.textContent = 'Nav ielādētu jautājumu.';
+    quizContainer.appendChild(emptyState);
+    questionsCounter.textContent = '0 jautājumi';
+    return;
+  }
+
+  questionsCounter.textContent = `${questionsData.length} jautājums${questionsData.length === 1 ? '' : 'i'}`;
+
+  questionsData.forEach(question => {
+    const card = document.createElement('article');
+    card.className = 'rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/60 p-5 space-y-4 shadow-sm';
+
+    const heading = document.createElement('h3');
+    heading.className = 'text-lg font-semibold flex gap-2 items-start';
+    heading.innerHTML = `<span class="text-sm font-bold text-blue-500 mt-0.5">${question.number}.</span> <span>${question.title}</span>`;
+    card.appendChild(heading);
+
+    const optionsWrapper = document.createElement('div');
+    optionsWrapper.className = 'space-y-3';
+
+    question.choices.forEach(choice => {
+      const option = document.createElement('label');
+      option.dataset.letter = choice.letter;
+      option.className = 'block border border-slate-200 dark:border-slate-700 rounded-2xl px-4 py-3 transition-all hover:border-blue-400 dark:hover:border-blue-500 bg-white/70 dark:bg-slate-900/80';
+
+      const titleRow = document.createElement('div');
+      titleRow.className = 'flex items-center justify-between gap-3';
+
+      const title = document.createElement('span');
+      title.className = 'font-medium text-slate-800 dark:text-slate-100';
+      title.textContent = `${choice.letter}) ${choice.text}`;
+
+      const badge = document.createElement('span');
+      badge.className = 'text-[10px] uppercase tracking-wide text-slate-400';
+      badge.textContent = choice.isText ? 'Teksta ievade' : 'Atzīme';
+
+      titleRow.appendChild(title);
+      titleRow.appendChild(badge);
+      option.appendChild(titleRow);
+
+      if (choice.isText) {
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'mt-3 w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/70 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500';
+        input.placeholder = 'Ieraksti savu atbildi...';
+        if (choice.response) {
+          input.value = choice.response;
+          option.classList.add('ring-2', 'ring-blue-400', 'dark:ring-blue-500');
+        }
+        input.addEventListener('input', () => {
+          const value = input.value.trim();
+          choice.response = value.length ? value : null;
+          option.classList.toggle('ring-2', Boolean(choice.response));
+          option.classList.toggle('ring-blue-400', Boolean(choice.response));
+          option.classList.toggle('dark:ring-blue-500', Boolean(choice.response));
+        });
+        option.appendChild(input);
+      } else {
+        const radioWrapper = document.createElement('div');
+        radioWrapper.className = 'mt-3 flex items-center gap-3';
+
+        const radio = document.createElement('input');
+        radio.type = 'radio';
+        radio.name = `question-${question.number}`;
+        radio.value = choice.letter;
+        radio.className = 'h-4 w-4 text-blue-600 border-slate-300 focus:ring-blue-500';
+        radio.checked = choice.response === choice.letter;
+
+        radio.addEventListener('change', () => {
+          question.choices.forEach(innerChoice => {
+            innerChoice.response = innerChoice.letter === choice.letter ? innerChoice.letter : null;
+          });
+          optionsWrapper.querySelectorAll('label').forEach(label => {
+            const isActive = label.dataset.letter === choice.letter;
+            label.classList.toggle('ring-2', isActive);
+            label.classList.toggle('ring-blue-400', isActive);
+            label.classList.toggle('dark:ring-blue-500', isActive);
+          });
+        });
+
+        radioWrapper.appendChild(radio);
+
+        const helper = document.createElement('span');
+        helper.className = 'text-xs text-slate-500 dark:text-slate-400';
+        helper.textContent = 'Atlasīt šo atbildi';
+        radioWrapper.appendChild(helper);
+
+        if (radio.checked) {
+          option.classList.add('ring-2', 'ring-blue-400', 'dark:ring-blue-500');
+        }
+
+        option.appendChild(radioWrapper);
+      }
+
+      optionsWrapper.appendChild(option);
+    });
+
+    card.appendChild(optionsWrapper);
+    quizContainer.appendChild(card);
   });
 }
 
-function exportAnswers() {
-  const mode = document.getElementById("exportMode").value;
-  let lines = [];
+function loadQuestions(source = 'Manuāli', variant = 'manual') {
+  const input = jsonInput.value.trim();
+  if (!input) {
+    alert('Lūdzu, ievadi JSON saturu.');
+    return;
+  }
 
-  questionsData.forEach(q => {
-    q.choices.forEach(choice => {
-      if (mode === "letters" && choice.answer) {
-        lines.push(choice.answer);
-      } else if (mode === "question-letter" && choice.answer) {
-        lines.push(`${q.number}. ${q.title} — ${choice.answer}`);
-      } else if (mode === "questions" && choice.answer) {
-        lines.push(`${q.number}. ${q.title}`);
-      } else if (mode === "detailed" && choice.answer) {
-        lines.push(`${q.number}. ${q.title}\n`);
-        lines.push(`${choice.letter}) ${choice.text}\n`);
-        lines.push(`[TEXT] ${choice.answer}\n`);
+  let parsedJson;
+  try {
+    parsedJson = JSON.parse(input);
+  } catch (error) {
+    alert('JSON formāts nav pareizs!');
+    return;
+  }
+
+  const parsedQuestions = parseQuestionsFromDeck(parsedJson);
+  if (!parsedQuestions.length) {
+    alert('Nav atrasti jautājumi JSON failā.');
+    return;
+  }
+
+  questionsData = parsedQuestions;
+  lastRawPayload = parsedJson;
+  renderQuestions();
+  setCurrentSourceChip(`${source} • ${new Date().toLocaleTimeString('lv-LV')}`, variant);
+}
+
+function handleAutoImport(payload) {
+  if (!payload) return;
+
+  lastRawPayload = payload;
+  try {
+    jsonInput.value = JSON.stringify(payload, null, 2);
+  } catch (error) {
+    console.error('Neizdevās serializēt pārtverto JSON.', error);
+  }
+
+  const parsedQuestions = parseQuestionsFromDeck(payload);
+  if (!parsedQuestions.length) {
+    setAutoStatus('Pārtvertais pieprasījums nesaturēja atpazīstamas atbilžu opcijas.', 'error');
+    return { success: false, reason: 'Nepazīstams formāts' };
+  }
+
+  questionsData = parsedQuestions;
+  renderQuestions();
+  setCurrentSourceChip(`Automātiski • ${new Date().toLocaleTimeString('lv-LV')}`, 'auto');
+  setAutoStatus('Jautājumi importēti automātiski.', 'active');
+  return { success: true, questionCount: parsedQuestions.length };
+}
+
+function exportAnswers() {
+  const mode = document.getElementById('exportMode').value;
+  const lines = [];
+
+  questionsData.forEach(question => {
+    question.choices.forEach(choice => {
+      if (!choice.response) return;
+
+      const baseLine = `${question.number}. ${question.title}`;
+      const answerValue = choice.isText ? choice.response : choice.letter;
+      if (mode === 'letters') {
+        lines.push(answerValue);
+      } else if (mode === 'question-letter') {
+        lines.push(`${baseLine} — ${answerValue}`);
+      } else if (mode === 'questions') {
+        lines.push(baseLine);
+      } else if (mode === 'detailed') {
+        lines.push(baseLine);
+        lines.push(`${choice.letter}) ${choice.text}`);
+        if (choice.isText) {
+          lines.push(`[TEKSTS] ${choice.response}`);
+        } else {
+          lines.push(`[ATZĪMĒTS] ${choice.letter}`);
+        }
+        lines.push('');
       }
     });
   });
 
-  if (lines.length === 0) {
-    alert("Nav atlasītas atbildes!");
+  if (!lines.length) {
+    alert('Nav atlasītas atbildes!');
     return;
   }
 
-  const blob = new Blob([lines.join("\n")], { type: "text/plain" });
+  const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
   const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "atbildes.txt";
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'atbildes.txt';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
-// --- Simulated API handler (client-side only) ---
-const originalFetch = window.fetch;
-window.fetch = async (url, options = {}) => {
-  const isApi = typeof url === "string" && url.match(/^\/api\/?$/i);
-  const method = (options.method || "GET").toUpperCase();
 
-  // Intercept POST /api
-  if (isApi && method === "POST") {
-    let raw;
-    try {
-      raw = options.body;
-      if (raw instanceof Blob) raw = await raw.text();
-      if (typeof raw !== "string") raw = JSON.stringify(raw);
-      const data = JSON.parse(raw);
+function exportAnswersToExcel() {
+  if (typeof XLSX === 'undefined') {
+    alert('Excel eksportēšanai nepieciešams XLSX bibliotēkas atbalsts.');
+    return;
+  }
 
-      if (!data.slide_deck || !data.slide_deck.slides)
-        throw new Error("Invalid JSON structure — missing slide_deck or slides");
+  const headerRow = ['Nr.', 'Jautājums', 'Atbilžu burts', 'Atbilžu teksts', 'Atbilde'];
+  const table = [headerRow];
+  const columnWidths = headerRow.map(cell => cell.length);
 
-      let qNumber = 1;
-      const formatted = [];
-
-      data.slide_deck.slides.forEach(slide => {
-        if (slide.interactive_contents && slide.interactive_contents.length > 0) {
-          slide.interactive_contents.forEach(content => {
-            if (content.choices && content.choices.length > 0) {
-              formatted.push({
-                number: qNumber++,
-                title: slide.title || `Jautājums ${qNumber}`,
-                choices: content.choices.map((c, i) => ({
-                  letter: String.fromCharCode(65 + i),
-                  text: c.title
-                }))
-              });
-            }
-          });
+  questionsData.forEach(question => {
+    question.choices.forEach(choice => {
+      if (!choice.response) return;
+      const answerValue = choice.isText ? (choice.response || '') : choice.letter;
+      const choiceText = choice.text || '';
+      const row = [
+        question.number,
+        question.title,
+        choice.letter,
+        choiceText,
+        answerValue
+      ];
+      table.push(row);
+      row.forEach((cell, index) => {
+        const length = typeof cell === 'number' ? String(cell).length : (cell ? cell.length : 0);
+        if (length > columnWidths[index]) {
+          columnWidths[index] = length;
         }
       });
+    });
+  });
 
-      return new Response(JSON.stringify(formatted, null, 2), {
-        status: 200,
-        headers: { "Content-Type": "application/json" }
-      });
-    } catch (err) {
-      return new Response(
-        JSON.stringify({ error: err.message || "Invalid JSON" }),
-        { status: 400, headers: { "Content-Type": "application/json" } }
-      );
-    }
+  if (table.length === 1) {
+    alert('Nav atlasītas atbildes eksportēšanai.');
+    return;
   }
 
-  // Intercept GET /api — return last loaded questions if available
-  if (isApi && method === "GET") {
-    if (!questionsData || questionsData.length === 0) {
-      return new Response(JSON.stringify({ error: "No data loaded yet" }), {
-        status: 400,
-        headers: { "Content-Type": "application/json" }
-      });
-    }
+  const worksheet = XLSX.utils.aoa_to_sheet(table);
+  worksheet['!cols'] = columnWidths.map(length => ({ wch: Math.min(Math.max(length + 2, 12), 60) }));
+  worksheet['!autofilter'] = { ref: worksheet['!ref'] };
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Atbildes');
+  XLSX.writeFile(workbook, 'atbildes.xlsx');
+}
 
-    return new Response(JSON.stringify(questionsData, null, 2), {
-      status: 200,
-      headers: { "Content-Type": "application/json" }
+function startMatrixRain() {
+  if (!matrixCanvas || !isMobile) return;
+
+  const context = matrixCanvas.getContext('2d');
+  const characters = '01アニメントールナ・';
+  let width = window.innerWidth;
+  let height = window.innerHeight;
+  const fontSize = 16;
+  let columns = Math.floor(width / fontSize);
+  let drops = Array(columns).fill(0);
+
+  function resizeCanvas() {
+    width = window.innerWidth;
+    height = window.innerHeight;
+    matrixCanvas.width = width;
+    matrixCanvas.height = height;
+    columns = Math.floor(width / fontSize);
+    drops = Array(columns).fill(0);
+  }
+
+  function draw() {
+    context.fillStyle = 'rgba(15, 23, 42, 0.2)';
+    context.fillRect(0, 0, width, height);
+
+    context.fillStyle = '#22c55e';
+    context.font = `${fontSize}px monospace`;
+
+    drops.forEach((y, index) => {
+      const text = characters.charAt(Math.floor(Math.random() * characters.length));
+      const x = index * fontSize;
+      context.fillText(text, x, y * fontSize);
+
+      if (y * fontSize > height && Math.random() > 0.975) {
+        drops[index] = 0;
+      }
+      drops[index] += 1;
+    });
+
+    requestAnimationFrame(draw);
+  }
+
+  resizeCanvas();
+  window.addEventListener('resize', resizeCanvas);
+  requestAnimationFrame(draw);
+}
+
+function registerNetworkSniffer() {
+  if (!auxiliaryMonitorsNotified) {
+    notifyAuxiliaryMonitors('Aktivizēts ātrais tīkla monitorings (fetch, XHR un Performance novērošana).');
+  }
+
+  if (fetchSnifferInstalled || xhrSnifferInstalled || performanceWatcherInstalled) {
+    setAutoStatus('Ātrais monitorings aktīvs. Atver menti prezentāciju iframe logā.', 'active');
+    appendCaptureLog('Ātrais monitorings gaida jaunu menti pieprasījumu no iegultā loga.');
+  } else {
+    setAutoStatus('Neizdevās aktivizēt automātisko monitoringu šajā pārlūkā.', 'error');
+    appendCaptureLog('Šī pārlūka ierobežojumu dēļ netiek pārtverti menti pieprasījumi automātiski.');
+    return;
+  }
+
+  if (typeof performance?.getEntriesByType === 'function') {
+    performance.getEntriesByType('resource').forEach(entry => {
+      handlePerformanceEntry(entry);
     });
   }
+}
 
-  // fallback to real fetch for everything else
-  return originalFetch(url, options);
-};
+setCurrentSourceChip('Nav ielādēts');
+setAutoStatus('Inicializēju ātro tīkla monitoringu...', 'idle');
+renderQuestions();
+setupRapidNetworkMonitors();
+if (isMobile && matrixCanvas) {
+  matrixCanvas.classList.remove('hidden');
+  startMatrixRain();
+  appendCaptureLog('Mobilā vide noteikta — aktivizēts Matrix lietus efekts un alternatīvais monitorings.');
+}
+if (autoIframe) {
+  autoIframe.addEventListener('load', () => {
+    logNetworkEvent('iframe', autoIframe.src, 'Iegultais saturs ielādēts', 'success');
+  });
+  autoIframe.addEventListener('error', () => {
+    logNetworkEvent('iframe', autoIframe.src, 'Neizdevās ielādēt iegulto logu', 'error');
+  });
+}
 
+window.addEventListener('load', () => {
+  registerNetworkSniffer();
+});
 </script>
 </body>
 </html>
