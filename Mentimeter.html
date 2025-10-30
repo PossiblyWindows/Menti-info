@@ -98,6 +98,14 @@
 let questionsData = [];
 let lastRawPayload = null;
 let captureLogInitialized = false;
+const processedDeckTimestamps = new Map();
+const loggedDeckTimestamps = new Map();
+const DECK_RECHECK_WINDOW_MS = 750;
+const LOG_THROTTLE_WINDOW_MS = 1000;
+let fetchSnifferInstalled = false;
+let xhrSnifferInstalled = false;
+let performanceWatcherInstalled = false;
+let auxiliaryMonitorsNotified = false;
 
 const jsonInput = document.getElementById('jsonInput');
 const quizContainer = document.getElementById('quizContainer');
@@ -219,6 +227,193 @@ function appendCaptureLog(message) {
   while (captureLog.children.length > 20) {
     captureLog.removeChild(captureLog.lastChild);
   }
+}
+
+function shouldProcessDeckUrl(url) {
+  if (!url) return false;
+  const now = Date.now();
+  const previous = processedDeckTimestamps.get(url);
+  if (previous && now - previous < DECK_RECHECK_WINDOW_MS) {
+    return false;
+  }
+  processedDeckTimestamps.set(url, now);
+  return true;
+}
+
+function markDeckProcessed(url) {
+  if (!url) return;
+  processedDeckTimestamps.set(url, Date.now());
+}
+
+function shouldLogDeckImport(url) {
+  if (!url) return true;
+  const now = Date.now();
+  const previous = loggedDeckTimestamps.get(url);
+  if (previous && now - previous < LOG_THROTTLE_WINDOW_MS) {
+    return false;
+  }
+  loggedDeckTimestamps.set(url, now);
+  return true;
+}
+
+function processImportedDeckPayload(payload, url, originLabel, capturedAt) {
+  if (!payload) return null;
+
+  if (url) {
+    markDeckProcessed(url);
+  }
+
+  const result = handleAutoImport(payload);
+  const match = typeof url === 'string' ? targetPattern.exec(url) : null;
+  const deckId = escapeHtml(match?.[1] || 'nezināms');
+  const safeUrl = escapeHtml(url || '');
+  const labelPrefix = originLabel ? `[${originLabel}] ` : '';
+
+  if (result?.success) {
+    if (shouldLogDeckImport(url)) {
+      appendCaptureLog(`${labelPrefix}Pārtverts <code>${deckId}</code> pieprasījums (${safeUrl}). Importēti ${result.questionCount} jautājumi.`);
+    }
+    if (capturedAt) {
+      setCurrentSourceChip(`Automātiski • ${new Date(capturedAt).toLocaleTimeString('lv-LV')}`, 'auto');
+    }
+  } else if (shouldLogDeckImport(url)) {
+    appendCaptureLog(`${labelPrefix}Pārtverts <code>${deckId}</code> pieprasījums (${safeUrl}), bet neizdevās automātiski nolasīt jautājumus.`);
+  }
+
+  return result;
+}
+
+async function tapResponseForDeck(response, url, originLabel) {
+  if (!response || !url) return;
+  try {
+    const text = await response.text();
+    if (!text?.length) return;
+    const payload = JSON.parse(text);
+    processImportedDeckPayload(payload, url, originLabel);
+  } catch (error) {
+    console.error('Neizdevās analizēt pārtverto pieprasījumu.', error);
+  }
+}
+
+async function fetchDeckDirectly(url, originLabel = 'Automātiskā pārbaude') {
+  if (!shouldProcessDeckUrl(url)) return;
+  try {
+    setAutoStatus('Pārbaudu menti pieprasījumus...', 'active');
+    const response = await fetch(url, { credentials: 'include' });
+    if (!response.ok) {
+      throw new Error(`Statuss ${response.status}`);
+    }
+    await tapResponseForDeck(response.clone(), url, originLabel);
+  } catch (error) {
+    if (shouldLogDeckImport(url)) {
+      appendCaptureLog(`[${originLabel}] Neizdevās pārbaudīt <code>${escapeHtml(url)}</code> (${escapeHtml(error.message || 'nezināma kļūda')}).`);
+    }
+  }
+}
+
+function notifyAuxiliaryMonitors() {
+  if (auxiliaryMonitorsNotified) return;
+  auxiliaryMonitorsNotified = true;
+  appendCaptureLog('Aktivizēta papildu tīkla pārbaude (fetch, XHR un Performance novērošana).');
+}
+
+function setupFetchSniffer() {
+  if (fetchSnifferInstalled || typeof window.fetch !== 'function') return;
+  fetchSnifferInstalled = true;
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = async (...args) => {
+    const requestInfo = args[0];
+    const url = typeof requestInfo === 'string' ? requestInfo : requestInfo?.url;
+    let shouldTap = false;
+    if (typeof url === 'string' && targetPattern.test(url)) {
+      shouldTap = shouldProcessDeckUrl(url);
+      notifyAuxiliaryMonitors();
+    }
+    const response = await originalFetch(...args);
+    if (shouldTap) {
+      tapResponseForDeck(response.clone(), url, 'fetch novērošana');
+    }
+    return response;
+  };
+}
+
+function setupXHRWatcher() {
+  if (xhrSnifferInstalled || typeof window.XMLHttpRequest !== 'function') return;
+  xhrSnifferInstalled = true;
+  const OriginalXHR = window.XMLHttpRequest;
+  const originalOpen = OriginalXHR.prototype.open;
+  const originalSend = OriginalXHR.prototype.send;
+
+  OriginalXHR.prototype.open = function(method, url, ...rest) {
+    this.__mentiUrl = typeof url === 'string' && targetPattern.test(url) ? url : null;
+    if (this.__mentiUrl) {
+      notifyAuxiliaryMonitors();
+    }
+    return originalOpen.apply(this, [method, url, ...rest]);
+  };
+
+  OriginalXHR.prototype.send = function(...args) {
+    if (this.__mentiUrl) {
+      const url = this.__mentiUrl;
+      const shouldTap = shouldProcessDeckUrl(url);
+      this.addEventListener('load', () => {
+        if (!shouldTap) return;
+        try {
+          let payload = null;
+          if (!this.responseType || this.responseType === 'text') {
+            if (this.responseText) {
+              payload = JSON.parse(this.responseText);
+            }
+          } else if (this.responseType === 'json') {
+            payload = this.response;
+          }
+          if (payload) {
+            processImportedDeckPayload(payload, url, 'XHR novērošana');
+          }
+        } catch (error) {
+          if (shouldLogDeckImport(url)) {
+            appendCaptureLog(`[XHR novērošana] Neizdevās nolasīt <code>${escapeHtml(url)}</code> (${escapeHtml(error.message || 'nezināma kļūda')}).`);
+          }
+        }
+      });
+    }
+    return originalSend.apply(this, args);
+  };
+}
+
+function setupPerformanceWatcher() {
+  if (performanceWatcherInstalled || typeof performance === 'undefined') return;
+  performanceWatcherInstalled = true;
+
+  const checkEntry = entryUrl => {
+    if (typeof entryUrl !== 'string' || !targetPattern.test(entryUrl)) return;
+    fetchDeckDirectly(entryUrl, 'Performance novērošana');
+  };
+
+  if ('PerformanceObserver' in window) {
+    try {
+      const observer = new PerformanceObserver(list => {
+        list.getEntries().forEach(entry => checkEntry(entry.name));
+      });
+      observer.observe({ type: 'resource', buffered: true });
+      notifyAuxiliaryMonitors();
+    } catch (error) {
+      console.warn('PerformanceObserver nav pieejams pilnai funkcionalitātei.', error);
+    }
+  }
+
+  if (typeof performance.getEntriesByType === 'function') {
+    notifyAuxiliaryMonitors();
+    setInterval(() => {
+      performance.getEntriesByType('resource').forEach(entry => checkEntry(entry.name));
+    }, 4000);
+  }
+}
+
+function setupRapidNetworkMonitors() {
+  setupFetchSniffer();
+  setupXHRWatcher();
+  setupPerformanceWatcher();
 }
 
 function escapeHtml(value) {
@@ -688,19 +883,7 @@ async function registerNetworkSniffer() {
     navigator.serviceWorker.addEventListener('message', event => {
       const { type, url, body, capturedAt } = event.data || {};
       if (type !== 'menti-slide-deck') return;
-
-      const match = typeof url === 'string' ? targetPattern.exec(url) : null;
-      const deckId = escapeHtml(match?.[1] || 'nezināms');
-      const safeUrl = escapeHtml(url || '');
-      const importResult = handleAutoImport(body);
-      if (importResult?.success) {
-        appendCaptureLog(`Pārtverts <code>${deckId}</code> pieprasījums (${safeUrl}). Importēti ${importResult.questionCount} jautājumi.`);
-        if (capturedAt) {
-          setCurrentSourceChip(`Automātiski • ${new Date(capturedAt).toLocaleTimeString('lv-LV')}`, 'auto');
-        }
-      } else {
-        appendCaptureLog(`Pārtverts <code>${deckId}</code> pieprasījums (${safeUrl}), bet neizdevās automātiski nolasīt jautājumus.`);
-      }
+      processImportedDeckPayload(body, url, 'Service Worker', capturedAt);
     });
 
     const readyRegistration = await navigator.serviceWorker.ready;
@@ -714,6 +897,7 @@ async function registerNetworkSniffer() {
 setCurrentSourceChip('Nav ielādēts');
 setAutoStatus('Inicializēju tīkla novērošanu...', 'idle');
 renderQuestions();
+setupRapidNetworkMonitors();
 
 window.addEventListener('beforeunload', () => {
   if (serviceWorkerObjectUrl) {
