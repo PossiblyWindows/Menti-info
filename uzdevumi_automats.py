@@ -181,7 +181,7 @@ class AutomationConfig:
     chatgpt_profile_dir: str = "./chatgpt_profils"
     page_load_timeout: int = 45
     wait_timeout: int = 15
-    gpt_retry_count: int = 3
+    gpt_retry_count: int = 1
     log_file: Optional[Path] = Path("results.log")
     mdwb: bool = False
     gpt_chunk_size: int = 400
@@ -677,13 +677,14 @@ def ensure_task_with_inputs(
 
 def build_prompt(html: str) -> str:
     return (
-        "Tu risini Uzdevumi.lv testu. Šeit ir pilns uzdevuma HTML.\n\n"
-        "Tava atbilde:\n"
+        "Jautājums 1 – pilns uzdevuma HTML ir zemāk. Šis ir vienīgais jautājums.\n\n"
+        "HTML saturs:\n"
+        f"{html}\n\n"
+        "Atbildes norādījumi:\n"
         "- Tikai pareizās vērtības rindās (viena vērtība katrā rindā)\n"
         "- Nekādas paskaidrošanas vai formatēšanas\n"
         "- Matemātikai – skaitļi, tekstam – vārdi\n"
-        "- Ja nav iespējams atrisināt, neatbildi vispār\n\n"
-        "HTML:\n" + html
+        "- Ja nav iespējams atrisināt, neatbildi vispār\n"
     )
 
 
@@ -909,19 +910,11 @@ def log_result(config: AutomationConfig, task: TaskMetadata, answers: Sequence[s
 def get_answers_from_gpt(
     chat_driver: Chrome, html: str, expected_fields: int, config: AutomationConfig
 ) -> List[str]:
-    answers: List[str] = []
-    for attempt in range(1, config.gpt_retry_count + 1):
-        raw_answer = send_to_chatgpt(chat_driver, html, config)
-        answers = parse_answers(raw_answer, expected_fields)
-        if answers_look_valid(answers, expected_fields):
-            return answers
-        if attempt < config.gpt_retry_count:
-            notify("gpt_retry")
-        else:
-            notify("gpt_failed")
-    if answers_look_valid(answers, expected_fields):
-        return answers
-    return []
+    raw_answer = send_to_chatgpt(chat_driver, html, config)
+    answers = parse_answers(raw_answer, expected_fields)
+    if not answers_look_valid(answers, expected_fields):
+        notify("gpt_failed")
+    return answers
 
 
 def finalize_test_if_ready(driver: Chrome, config: AutomationConfig) -> bool:
