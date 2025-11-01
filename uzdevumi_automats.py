@@ -48,6 +48,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support.select import Select
 
 try:  # Tkinter ir neobligāts – ja nav pieejams, GUI režīms tiek atspējots.
     import tkinter as tk
@@ -70,7 +71,7 @@ LATVIAN_MESSAGES = {
     "task_kind": "📂 Veids: {kind}",
     "task_text": "📝 Teksts: {text}",
     "points": "⭐ Punkti: {points}",
-    "skip_task": "⚠ Uzdevums ar bildēm / vilkšanu – izlaižam",
+    "skip_task": "⚠ Uzdevums ar neatbalstītu interaktīvu saturu – izlaižam",
     "retry_task": "↻ Meklē citu uzdevumu…",
     "open_chatgpt": "🤖 Atveru ChatGPT…",
     "prompt_sent": "📨 Sūtīts GPT",
@@ -90,11 +91,7 @@ EXCLUDED_SUBJECTS = {"Starpbrīdis", "Uzdevumi.lv konkursi"}
 EXCLUDED_SUBJECT_THEMES = {
     "Matemātika": {"Gatavošanās matemātikas olimpiādēm"},
 }
-SKIP_MARKERS = (
-    "<img",
-    "background-image",
-    "gxs-resource-image",
-    "gxst-resource-image",
+UNSUPPORTED_MARKERS = (
     "gxs-dnd-option",
     "ui-draggable",
     "answer-box",
@@ -141,7 +138,7 @@ class TaskMetadata:
         html_lower = (self.html or "").lower()
         if not html_lower.strip():
             return True
-        return any(marker in html_lower for marker in SKIP_MARKERS)
+        return any(marker in html_lower for marker in UNSUPPORTED_MARKERS)
 
 
 @dataclasses.dataclass(slots=True)
@@ -151,6 +148,14 @@ class TaskOption:
     item_type: str
     completed: bool
     href: str
+
+
+@dataclasses.dataclass(slots=True)
+class AnswerField:
+    kind: str
+    element: Any
+    name: str = ""
+    options: List[Tuple[str, Any]] = dataclasses.field(default_factory=list)
 
 
 def task_option_key(option: TaskOption) -> str:
@@ -200,6 +205,136 @@ def wait_for_all(driver: Chrome, css: str, timeout: int) -> List:
     except TimeoutException:
         return []
 
+
+def xpath_literal(value: str) -> str:
+    if "'" not in value:
+        return f"'{value}'"
+    if '"' not in value:
+        return f'"{value}"'
+    parts = value.split("'")
+    concat_parts: List[str] = []
+    for index, part in enumerate(parts):
+        if part:
+            concat_parts.append(f"'{part}'")
+        if index != len(parts) - 1:
+            concat_parts.append("\"'\"")
+    return "concat(" + ", ".join(concat_parts) + ")"
+
+
+def get_label_text(container, control) -> str:
+    text = ""
+    control_id = control.get_attribute("id") or ""
+    if control_id:
+        try:
+            label = container.find_element(By.XPATH, f".//label[@for={xpath_literal(control_id)}]")
+            text = label.text.strip()
+        except NoSuchElementException:
+            text = ""
+    if not text:
+        try:
+            label = control.find_element(By.XPATH, "ancestor::label[1]")
+            text = label.text.strip()
+        except NoSuchElementException:
+            text = ""
+    if not text:
+        text = (control.text or control.get_attribute("value") or "").strip()
+    return text
+
+
+def gather_answer_fields(driver: Chrome) -> List[AnswerField]:
+    try:
+        form = driver.find_element(By.CSS_SELECTOR, "form.taskForm")
+    except NoSuchElementException:
+        return []
+
+    controls = form.find_elements(By.CSS_SELECTOR, "input,textarea,select")
+    fields: List[AnswerField] = []
+    seen_radio: Set[str] = set()
+    seen_checkbox: Set[str] = set()
+
+    for control in controls:
+        if not control.is_displayed():
+            continue
+        tag = control.tag_name.lower()
+        if tag == "select":
+            options = []
+            for option in control.find_elements(By.TAG_NAME, "option"):
+                option_text = option.text.strip()
+                if not option_text:
+                    continue
+                options.append((option_text, option))
+            fields.append(
+                AnswerField(
+                    kind="select",
+                    element=control,
+                    name=control.get_attribute("name") or "",
+                    options=options,
+                )
+            )
+        elif tag == "textarea":
+            fields.append(
+                AnswerField(
+                    kind="text", element=control, name=control.get_attribute("name") or ""
+                )
+            )
+        elif tag == "input":
+            input_type = (control.get_attribute("type") or "").lower()
+            if input_type in {"text", "number", "email", "tel"}:
+                fields.append(
+                    AnswerField(
+                        kind="text",
+                        element=control,
+                        name=control.get_attribute("name") or "",
+                    )
+                )
+            elif input_type == "radio":
+                group_name = control.get_attribute("name") or ""
+                if group_name in seen_radio:
+                    continue
+                seen_radio.add(group_name)
+                literal = xpath_literal(group_name)
+                radios = form.find_elements(
+                    By.XPATH, f".//input[@type='radio' and @name={literal}]"
+                )
+                options = []
+                for radio in radios:
+                    if not radio.is_displayed():
+                        continue
+                    label_text = get_label_text(form, radio)
+                    options.append((label_text, radio))
+                fields.append(
+                    AnswerField(
+                        kind="radio",
+                        element=control,
+                        name=group_name,
+                        options=options,
+                    )
+                )
+            elif input_type == "checkbox":
+                group_name = control.get_attribute("name") or ""
+                if group_name in seen_checkbox:
+                    continue
+                seen_checkbox.add(group_name)
+                literal = xpath_literal(group_name)
+                boxes = form.find_elements(
+                    By.XPATH, f".//input[@type='checkbox' and @name={literal}]"
+                )
+                options = []
+                for box in boxes:
+                    if not box.is_displayed():
+                        continue
+                    label_text = get_label_text(form, box)
+                    options.append((label_text, box))
+                fields.append(
+                    AnswerField(
+                        kind="checkbox",
+                        element=control,
+                        name=group_name,
+                        options=options,
+                    )
+                )
+
+    return fields
 
 def create_driver(profile_dir: str, config: AutomationConfig) -> Chrome:
     options = uc.ChromeOptions()
@@ -336,12 +471,17 @@ def collect_available_tasks(driver: Chrome) -> List[TaskOption]:
 
     sections = driver.find_elements(By.CSS_SELECTOR, "section.block")
     for section in sections:
-        try:
-            heading = section.find_element(By.CSS_SELECTOR, "h2").text.strip()
-        except NoSuchElementException:
-            heading = ""
+        class_name = (section.get_attribute("class") or "").lower()
+        heading = ""
+        for selector in ("h2", "h3", "header h3", "header h2"):
+            try:
+                heading = section.find_element(By.CSS_SELECTOR, selector).text.strip()
+            except NoSuchElementException:
+                continue
+            if heading:
+                break
         heading_lower = heading.lower()
-        item_type = "Tests" if "test" in heading_lower else "Uzdevums"
+        item_type = "Tests" if "test" in heading_lower or "test" in class_name else "Uzdevums"
 
         rows = section.find_elements(By.CSS_SELECTOR, "table.exercise-table tbody tr")
         if rows:
@@ -359,12 +499,19 @@ def collect_available_tasks(driver: Chrome) -> List[TaskOption]:
                 seen_hrefs.add(href)
                 completed = False
                 try:
-                    earned = row.find_element(By.CSS_SELECTOR, ".points .earned").text.strip()
-                    maximum = row.find_element(By.CSS_SELECTOR, ".points .max").text.strip()
-                    if earned and maximum and earned == maximum:
+                    if row.find_elements(By.CSS_SELECTOR, ".svg-sprite-vs.top-point-full"):
                         completed = True
+                    else:
+                        earned = row.find_element(By.CSS_SELECTOR, ".points .earned").text.strip()
+                        maximum = row.find_element(By.CSS_SELECTOR, ".points .max").text.strip()
+                        if earned and maximum and earned == maximum:
+                            completed = True
                 except NoSuchElementException:
-                    pass
+                    try:
+                        if row.find_elements(By.CSS_SELECTOR, ".svg-sprite-vs.top-point-full"):
+                            completed = True
+                    except NoSuchElementException:
+                        completed = False
                 options.append(TaskOption(link, title, item_type, completed, href))
             continue
 
@@ -408,7 +555,8 @@ def extract_task_metadata(
     driver: Chrome,
     subject: str,
     theme: str,
-    selected_task: TaskOption,
+    task_title: str,
+    item_type: str,
     config: AutomationConfig,
 ) -> TaskMetadata:
     try:
@@ -425,17 +573,14 @@ def extract_task_metadata(
     except NoSuchElementException:
         points = "0 p."
 
-    inputs = driver.find_elements(
-        By.CSS_SELECTOR,
-        "input[type='text'],input[type='number'],textarea,input.gxs-answer-number",
-    )
-    answer_fields = sum(1 for element in inputs if element.is_displayed())
+    fields = gather_answer_fields(driver)
+    answer_fields = len(fields)
 
     metadata = TaskMetadata(
         subject=subject,
         theme=theme,
-        task_title=selected_task.title,
-        item_type=selected_task.item_type,
+        task_title=task_title,
+        item_type=item_type,
         html=html_content,
         text_preview=preview,
         points=points,
@@ -451,7 +596,9 @@ def extract_task_metadata(
     return metadata
 
 
-def ensure_task_with_inputs(driver: Chrome, subject: str, theme: str, config: AutomationConfig) -> TaskMetadata:
+def ensure_task_with_inputs(
+    driver: Chrome, subject: str, theme: str, config: AutomationConfig
+) -> Tuple[TaskMetadata, TaskOption]:
     """Atrod derīgu uzdevumu; ja nepieciešams, izvēlas citu."""
 
     theme_url = driver.current_url
@@ -465,7 +612,9 @@ def ensure_task_with_inputs(driver: Chrome, subject: str, theme: str, config: Au
             time.sleep(2)
             raise
         attempted.add(task_option_key(selected_task))
-        metadata = extract_task_metadata(driver, subject, theme, selected_task, config)
+        metadata = extract_task_metadata(
+            driver, subject, theme, selected_task.title, selected_task.item_type, config
+        )
         if metadata.should_skip:
             notify("retry_task")
             driver.back()
@@ -487,7 +636,7 @@ def ensure_task_with_inputs(driver: Chrome, subject: str, theme: str, config: Au
                 driver.get(theme_url)
                 time.sleep(2)
             continue
-        return metadata
+        return metadata, selected_task
 
 
 def build_prompt(html: str) -> str:
@@ -502,8 +651,7 @@ def build_prompt(html: str) -> str:
     )
 
 
-def send_to_chatgpt(chat_driver: Chrome, html: str, config: AutomationConfig) -> str:
-    prompt = build_prompt(html)
+def send_chatgpt_message(chat_driver: Chrome, message: str, config: AutomationConfig) -> str:
     try:
         textarea = wait_for(chat_driver, "#prompt-textarea", config.wait_timeout)
     except AutomationError as exc:
@@ -511,7 +659,7 @@ def send_to_chatgpt(chat_driver: Chrome, html: str, config: AutomationConfig) ->
 
     textarea.send_keys(Keys.CONTROL, "a")
     textarea.send_keys(Keys.DELETE)
-    textarea.send_keys(prompt)
+    textarea.send_keys(message)
     time.sleep(1)
     safe_click(chat_driver, wait_for(chat_driver, "#composer-submit-button", config.wait_timeout, EC.element_to_be_clickable))
     notify("prompt_sent")
@@ -585,35 +733,240 @@ def answers_look_valid(answers: Sequence[str], expected_fields: int) -> bool:
     return True
 
 
-def fill_answers(driver: Chrome, answers: Sequence[str], config: AutomationConfig) -> None:
-    inputs = [
-        element
-        for element in driver.find_elements(
-            By.CSS_SELECTOR,
-            "input[type='text'],input[type='number'],textarea,input.gxs-answer-number",
+def obtain_answers_from_gpt(
+    chat_driver: Chrome, html: str, expected_fields: int, config: AutomationConfig
+) -> List[str]:
+    answers = parse_answers(
+        send_chatgpt_message(chat_driver, build_prompt(html), config), expected_fields
+    )
+    if answers_look_valid(answers, expected_fields):
+        return answers
+
+    for _ in range(1, config.gpt_retry_count):
+        notify("gpt_retry")
+        raw = send_chatgpt_message(
+            chat_driver,
+            "Lūdzu atkārto tikai ar atbildēm, katru jaunā rindā, bez paskaidrojumiem.",
+            config,
         )
-        if element.is_displayed()
-    ]
+        answers = parse_answers(raw, expected_fields)
+        if answers_look_valid(answers, expected_fields):
+            return answers
 
-    if not inputs:
+    notify("gpt_failed")
+    return []
+
+
+def normalize_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value.strip().lower()) if value else ""
+
+
+def split_multi_answer(value: str) -> List[str]:
+    if not value:
+        return []
+    parts = re.split(r"[;,/]+", value)
+    return [part.strip() for part in parts if part.strip()]
+
+
+def fill_answers(driver: Chrome, answers: Sequence[str], config: AutomationConfig) -> bool:
+    fields = gather_answer_fields(driver)
+    if not fields:
         notify("no_inputs")
-        return
+        return False
 
-    for field, answer in zip(inputs, answers):
-        try:
-            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", field)
-            field.clear()
-            field.send_keys(answer)
-            time.sleep(0.3)
-        except (JavascriptException, WebDriverException):
-            continue
+    for field, answer in zip(fields, answers):
+        if field.kind == "text":
+            try:
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", field.element)
+                field.element.clear()
+                field.element.send_keys(answer)
+                time.sleep(0.3)
+            except (JavascriptException, WebDriverException):
+                continue
+        elif field.kind == "select":
+            selection = Select(field.element)
+            normalized_answer = normalize_text(answer)
+            matched = False
+            for option_text, _ in field.options:
+                if normalize_text(option_text) == normalized_answer:
+                    selection.select_by_visible_text(option_text)
+                    matched = True
+                    break
+            if not matched:
+                for option_text, _ in field.options:
+                    if normalized_answer and normalized_answer in normalize_text(option_text):
+                        selection.select_by_visible_text(option_text)
+                        matched = True
+                        break
+            if not matched and field.options:
+                try:
+                    selection.select_by_value(answer)
+                    matched = True
+                except Exception:
+                    matched = False
+            if not matched and field.options:
+                selection.select_by_visible_text(field.options[0][0])
+        elif field.kind == "radio":
+            normalized_answer = normalize_text(answer)
+            choice = None
+            for option_text, option_element in field.options:
+                if normalize_text(option_text) == normalized_answer:
+                    choice = option_element
+                    break
+            if not choice:
+                for option_text, option_element in field.options:
+                    if normalized_answer and normalized_answer in normalize_text(option_text):
+                        choice = option_element
+                        break
+            if not choice and field.options:
+                choice = field.options[0][1]
+            if choice:
+                try:
+                    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", choice)
+                    safe_click(driver, choice)
+                    time.sleep(0.2)
+                except (JavascriptException, WebDriverException):
+                    continue
+        elif field.kind == "checkbox":
+            desired = {normalize_text(value) for value in split_multi_answer(answer)}
+            if not desired and field.options:
+                desired.add(normalize_text(field.options[0][0]))
+            for option_text, option_element in field.options:
+                normalized_option = normalize_text(option_text)
+                should_select = normalized_option in desired or option_text in answers
+                try:
+                    already = option_element.is_selected()
+                except WebDriverException:
+                    already = False
+                if should_select and not already:
+                    try:
+                        driver.execute_script(
+                            "arguments[0].scrollIntoView({block:'center'});", option_element
+                        )
+                        safe_click(driver, option_element)
+                        time.sleep(0.2)
+                    except (JavascriptException, WebDriverException):
+                        continue
+                if not should_select and already:
+                    try:
+                        safe_click(driver, option_element)
+                    except (JavascriptException, WebDriverException):
+                        continue
 
     try:
         submit_btn = wait_for(driver, "#submitAnswerBtn", config.wait_timeout, EC.element_to_be_clickable)
         safe_click(driver, submit_btn)
         notify("submitted")
+        return True
     except AutomationError:
         notify("submit_missing")
+        return False
+
+
+def has_finish_block(driver: Chrome) -> bool:
+    try:
+        block = driver.find_element(By.CSS_SELECTOR, ".block.sm-easy-header")
+    except NoSuchElementException:
+        return False
+    return bool(block.find_elements(By.CSS_SELECTOR, ".btn"))
+
+
+def wait_for_next_question(driver: Chrome, previous_html: str, config: AutomationConfig) -> bool:
+    deadline = time.time() + config.wait_timeout
+    while time.time() < deadline:
+        if has_finish_block(driver):
+            return False
+        try:
+            element = driver.find_element(By.CSS_SELECTOR, "#taskhtml")
+            current_html = element.get_attribute("innerHTML") or ""
+            if current_html.strip() and current_html != previous_html:
+                return True
+        except NoSuchElementException:
+            pass
+        time.sleep(1)
+    return False
+
+
+def finalize_test_if_available(driver: Chrome, config: AutomationConfig) -> None:
+    try:
+        block = driver.find_element(By.CSS_SELECTOR, ".block.sm-easy-header")
+    except NoSuchElementException:
+        return
+    buttons = block.find_elements(By.CSS_SELECTOR, "button.btn")
+    target = None
+    for button in buttons:
+        classes = (button.get_attribute("class") or "").lower()
+        if "primary" in classes:
+            target = button
+            break
+    if not target and buttons:
+        target = buttons[0]
+    if target:
+        try:
+            safe_click(driver, target)
+            time.sleep(2)
+        except WebDriverException:
+            pass
+
+
+def solve_question(
+    uzdevumi_driver: Chrome,
+    chat_driver: Chrome,
+    metadata: TaskMetadata,
+    config: AutomationConfig,
+) -> List[str]:
+    answers = obtain_answers_from_gpt(chat_driver, metadata.html, metadata.answer_fields, config)
+    if not answers_look_valid(answers, metadata.answer_fields):
+        notify("invalid_answers")
+        return []
+    notify("filling", values=answers)
+    submitted = fill_answers(uzdevumi_driver, answers, config)
+    if not submitted:
+        return []
+    return answers
+
+
+def solve_test_sequence(
+    uzdevumi_driver: Chrome,
+    chat_driver: Chrome,
+    metadata: TaskMetadata,
+    config: AutomationConfig,
+) -> List[str]:
+    all_answers: List[str] = []
+    current_metadata = metadata
+    question_index = 1
+
+    while True:
+        answers = obtain_answers_from_gpt(
+            chat_driver, current_metadata.html, current_metadata.answer_fields, config
+        )
+        if not answers_look_valid(answers, current_metadata.answer_fields):
+            notify("invalid_answers")
+            break
+        notify("filling", values=answers)
+        submitted = fill_answers(uzdevumi_driver, answers, config)
+        if not submitted:
+            break
+        all_answers.append(f"{question_index}. {' | '.join(answers)}")
+        if not wait_for_next_question(uzdevumi_driver, current_metadata.html, config):
+            finalize_test_if_available(uzdevumi_driver, config)
+            break
+        try:
+            current_metadata = extract_task_metadata(
+                uzdevumi_driver,
+                metadata.subject,
+                metadata.theme,
+                metadata.task_title,
+                metadata.item_type,
+                config,
+            )
+            if current_metadata.should_skip:
+                break
+        except AutomationError:
+            break
+        question_index += 1
+
+    return all_answers
 
 
 def log_result(config: AutomationConfig, task: TaskMetadata, answers: Sequence[str]) -> None:
@@ -642,18 +995,24 @@ def automation_flow(username: str, password: str, config: AutomationConfig) -> N
         login_via_eklase(uzdevumi_driver, username, password, config)
 
         exhausted_combinations: Set[Tuple[str, str]] = set()
+        selected_task: Optional[TaskOption] = None
         while True:
             subject, theme = select_random_subject(
                 uzdevumi_driver, config, excluded_combinations=exhausted_combinations
             )
             try:
-                task_metadata = ensure_task_with_inputs(uzdevumi_driver, subject, theme, config)
+                task_metadata, selected_task = ensure_task_with_inputs(
+                    uzdevumi_driver, subject, theme, config
+                )
                 break
             except NoValidTaskError:
                 exhausted_combinations.add((subject, theme))
                 notify("no_valid_tasks")
                 time.sleep(1)
                 continue
+
+        if selected_task is None:
+            raise AutomationError("Neizdevās atlasīt uzdevumu")
 
         # Mēģinām noskaidrot tēmas nosaukumu pēc navigācijas ceļa
         try:
@@ -668,32 +1027,16 @@ def automation_flow(username: str, password: str, config: AutomationConfig) -> N
         chat_driver.get("https://chat.openai.com/")
         time.sleep(6)
 
-        answers: List[str] = []
-        for attempt in range(1, config.gpt_retry_count + 1):
-            raw_answer = send_to_chatgpt(chat_driver, task_metadata.html, config)
-            answers = parse_answers(raw_answer, task_metadata.answer_fields)
-            if answers_look_valid(answers, task_metadata.answer_fields):
-                break
-            if attempt < config.gpt_retry_count:
-                notify("gpt_retry")
-                followup = "Lūdzu atkārto tikai ar atbildēm, katru jaunā rindā, bez paskaidrojumiem."
-                textarea = wait_for(chat_driver, "#prompt-textarea", config.wait_timeout)
-                textarea.send_keys(Keys.CONTROL, "a")
-                textarea.send_keys(Keys.DELETE)
-                textarea.send_keys(followup)
-                time.sleep(1)
-                safe_click(chat_driver, wait_for(chat_driver, "#composer-submit-button", config.wait_timeout, EC.element_to_be_clickable))
-                time.sleep(3)
-            else:
-                notify("gpt_failed")
-
-        if not answers_look_valid(answers, task_metadata.answer_fields):
-            notify("invalid_answers")
-            return
-
-        notify("filling", values=answers)
-        fill_answers(uzdevumi_driver, answers, config)
-        log_result(config, task_metadata, answers)
+        if selected_task.item_type == "Tests":
+            answers = solve_test_sequence(uzdevumi_driver, chat_driver, task_metadata, config)
+            if not answers:
+                return
+            log_result(config, task_metadata, answers)
+        else:
+            answers = solve_question(uzdevumi_driver, chat_driver, task_metadata, config)
+            if not answers:
+                return
+            log_result(config, task_metadata, answers)
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
