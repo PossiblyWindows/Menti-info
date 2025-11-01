@@ -83,6 +83,7 @@ LATVIAN_MESSAGES = {
     "invalid_answers": "⚠ GPT neatgrieza derīgas vērtības",
     "gpt_retry": "↻ GPT atbilde neskaidra – mēģinu vēlreiz",
     "gpt_failed": "❌ Neizdevās iegūt lietojamu atbildi no GPT",
+    "no_valid_tasks": "⚠ Nav derīgu uzdevumu šajā tēmā – izvēlos citu priekšmetu/tēmu",
 }
 
 EXCLUDED_SUBJECTS = {"Starpbrīdis", "Uzdevumi.lv konkursi"}
@@ -104,6 +105,10 @@ SKIP_MARKERS = (
 
 class AutomationError(RuntimeError):
     """Specifiska kļūda automatizācijas procesam."""
+
+
+class NoValidTaskError(AutomationError):
+    """Nav atrasts derīgs uzdevums izvēlētajā tēmā."""
 
 
 @dataclasses.dataclass(slots=True)
@@ -146,6 +151,17 @@ class TaskOption:
     item_type: str
     completed: bool
     href: str
+
+
+def task_option_key(option: TaskOption) -> str:
+    href = option.href or ""
+    if href:
+        return href
+    try:
+        element_id = option.element.id  # type: ignore[attr-defined]
+    except Exception:
+        element_id = id(option.element)
+    return f"webelement:{element_id}"
 
 
 def notify(key: str, **kwargs: object) -> None:
@@ -248,55 +264,70 @@ def login_via_eklase(driver: Chrome, username: str, password: str, config: Autom
     notify("login_ok")
 
 
-def select_random_subject(driver: Chrome, config: AutomationConfig) -> Tuple[str, str]:
-    notify("subject_search")
-    driver.get("https://www.uzdevumi.lv/p")
-    time.sleep(2)
-    decline_cookies(driver, config.wait_timeout)
+def select_random_subject(
+    driver: Chrome,
+    config: AutomationConfig,
+    excluded_combinations: Optional[Set[Tuple[str, str]]] = None,
+) -> Tuple[str, str]:
+    excluded_combinations = excluded_combinations or set()
+    blocked_subjects: Set[str] = set()
 
-    subject_container = wait_for(driver, "ul.list-unstyled.thumbnails", config.wait_timeout)
-    all_subjects = subject_container.find_elements(By.CSS_SELECTOR, "li.thumb.wide a[href]")
-    candidates = [
-        (element, element.text.replace("\n", " ").strip())
-        for element in all_subjects
-        if element.is_displayed()
-    ]
+    while True:
+        notify("subject_search")
+        driver.get("https://www.uzdevumi.lv/p")
+        time.sleep(2)
+        decline_cookies(driver, config.wait_timeout)
 
-    filtered = [entry for entry in candidates if entry[1] not in EXCLUDED_SUBJECTS]
-    if not filtered:
-        raise AutomationError("Nav piemērotu priekšmetu")
+        subject_container = wait_for(driver, "ul.list-unstyled.thumbnails", config.wait_timeout)
+        all_subjects = subject_container.find_elements(By.CSS_SELECTOR, "li.thumb.wide a[href]")
+        candidates = [
+            (element, element.text.replace("\n", " ").strip())
+            for element in all_subjects
+            if element.is_displayed()
+        ]
 
-    element, subject_text = random.choice(filtered)
-    notify("subject_selected", subject=subject_text)
-    safe_click(driver, element)
-    time.sleep(2)
-    decline_cookies(driver, config.wait_timeout)
+        filtered = [entry for entry in candidates if entry[1] not in EXCLUDED_SUBJECTS]
+        available = [entry for entry in filtered if entry[1] not in blocked_subjects]
+        if not available:
+            if blocked_subjects:
+                raise AutomationError("Nav tēmu")
+            raise AutomationError("Nav piemērotu priekšmetu")
 
-    try:
-        overlay_button = driver.find_element(By.CSS_SELECTOR, ".ui-button")
-        safe_click(driver, overlay_button)
-        time.sleep(1)
-    except NoSuchElementException:
-        pass
+        element, subject_text = random.choice(available)
+        notify("subject_selected", subject=subject_text)
+        safe_click(driver, element)
+        time.sleep(2)
+        decline_cookies(driver, config.wait_timeout)
 
-    themes = []
-    for elem in driver.find_elements(By.CSS_SELECTOR, "ol.list-unstyled a[href]"):
-        if not elem.is_displayed():
-            continue
-        theme_text = elem.text.strip()
-        excluded_for_subject = EXCLUDED_SUBJECT_THEMES.get(subject_text, set())
-        if theme_text and theme_text not in excluded_for_subject:
+        try:
+            overlay_button = driver.find_element(By.CSS_SELECTOR, ".ui-button")
+            safe_click(driver, overlay_button)
+            time.sleep(1)
+        except NoSuchElementException:
+            pass
+
+        themes: List[Tuple[Any, str]] = []
+        for elem in driver.find_elements(By.CSS_SELECTOR, "ol.list-unstyled a[href]"):
+            if not elem.is_displayed():
+                continue
+            theme_text = elem.text.strip()
+            excluded_for_subject = EXCLUDED_SUBJECT_THEMES.get(subject_text, set())
+            if not theme_text or theme_text in excluded_for_subject:
+                continue
+            if (subject_text, theme_text) in excluded_combinations:
+                continue
             themes.append((elem, theme_text))
-    if not themes:
-        raise AutomationError("Nav tēmu")
 
-    selected_theme, theme_text = random.choice(themes)
-    notify("theme_selected", theme=theme_text)
-    safe_click(driver, selected_theme)
-    time.sleep(2)
-    decline_cookies(driver, config.wait_timeout)
+        if themes:
+            selected_theme, theme_text = random.choice(themes)
+            notify("theme_selected", theme=theme_text)
+            safe_click(driver, selected_theme)
+            time.sleep(2)
+            decline_cookies(driver, config.wait_timeout)
+            return subject_text, theme_text
 
-    return subject_text, theme_text
+        blocked_subjects.add(subject_text)
+        time.sleep(1)
 
 
 def collect_available_tasks(driver: Chrome) -> List[TaskOption]:
@@ -355,13 +386,16 @@ def collect_available_tasks(driver: Chrome) -> List[TaskOption]:
     return options
 
 
-def open_random_task(driver: Chrome, config: AutomationConfig) -> TaskOption:
+def open_random_task(
+    driver: Chrome, config: AutomationConfig, attempted: Set[str]
+) -> TaskOption:
     options = collect_available_tasks(driver)
-    if not options:
-        raise AutomationError("Nav uzdevumu")
+    remaining = [option for option in options if task_option_key(option) not in attempted]
+    if not remaining:
+        raise NoValidTaskError("Nav derīgu uzdevumu")
 
-    incomplete = [option for option in options if not option.completed]
-    selection = random.choice(incomplete or options)
+    incomplete = [option for option in remaining if not option.completed]
+    selection = random.choice(incomplete or remaining)
     notify("task_selected", task=selection.title)
     notify("task_kind", kind=selection.item_type)
     safe_click(driver, selection.element)
@@ -421,9 +455,16 @@ def ensure_task_with_inputs(driver: Chrome, subject: str, theme: str, config: Au
     """Atrod derīgu uzdevumu; ja nepieciešams, izvēlas citu."""
 
     theme_url = driver.current_url
+    attempted: Set[str] = set()
 
     while True:
-        selected_task = open_random_task(driver, config)
+        try:
+            selected_task = open_random_task(driver, config, attempted)
+        except NoValidTaskError:
+            driver.get(theme_url)
+            time.sleep(2)
+            raise
+        attempted.add(task_option_key(selected_task))
         metadata = extract_task_metadata(driver, subject, theme, selected_task, config)
         if metadata.should_skip:
             notify("retry_task")
@@ -599,8 +640,20 @@ def automation_flow(username: str, password: str, config: AutomationConfig) -> N
         stack.callback(uzdevumi_driver.quit)
 
         login_via_eklase(uzdevumi_driver, username, password, config)
-        subject, theme = select_random_subject(uzdevumi_driver, config)
-        task_metadata = ensure_task_with_inputs(uzdevumi_driver, subject, theme, config)
+
+        exhausted_combinations: Set[Tuple[str, str]] = set()
+        while True:
+            subject, theme = select_random_subject(
+                uzdevumi_driver, config, excluded_combinations=exhausted_combinations
+            )
+            try:
+                task_metadata = ensure_task_with_inputs(uzdevumi_driver, subject, theme, config)
+                break
+            except NoValidTaskError:
+                exhausted_combinations.add((subject, theme))
+                notify("no_valid_tasks")
+                time.sleep(1)
+                continue
 
         # Mēģinām noskaidrot tēmas nosaukumu pēc navigācijas ceļa
         try:
@@ -736,3 +789,5 @@ if __name__ == "__main__":
     except AutomationError as error:
         print(f"❌ {error}")
         sys.exit(1)
+
+
