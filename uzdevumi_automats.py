@@ -33,7 +33,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Any, List, Optional, Sequence, Set, Tuple
 
 import undetected_chromedriver as uc
 from selenium.common.exceptions import (
@@ -67,6 +67,7 @@ LATVIAN_MESSAGES = {
     "subject_selected": "➡ Priekšmets: {subject}",
     "theme_selected": "➡ Tēma: {theme}",
     "task_selected": "➡ Uzdevums: {task}",
+    "task_kind": "📂 Veids: {kind}",
     "task_text": "📝 Teksts: {text}",
     "points": "⭐ Punkti: {points}",
     "skip_task": "⚠ Uzdevums ar bildēm / vilkšanu – izlaižam",
@@ -85,6 +86,9 @@ LATVIAN_MESSAGES = {
 }
 
 EXCLUDED_SUBJECTS = {"Starpbrīdis", "Uzdevumi.lv konkursi"}
+EXCLUDED_SUBJECT_THEMES = {
+    "Matemātika": {"Gatavošanās matemātikas olimpiādēm"},
+}
 SKIP_MARKERS = (
     "<img",
     "background-image",
@@ -121,6 +125,7 @@ class TaskMetadata:
     subject: str
     theme: str
     task_title: str
+    item_type: str
     html: str
     text_preview: str
     points: str
@@ -132,6 +137,15 @@ class TaskMetadata:
         if not html_lower.strip():
             return True
         return any(marker in html_lower for marker in SKIP_MARKERS)
+
+
+@dataclasses.dataclass(slots=True)
+class TaskOption:
+    element: Any
+    title: str
+    item_type: str
+    completed: bool
+    href: str
 
 
 def notify(key: str, **kwargs: object) -> None:
@@ -265,12 +279,18 @@ def select_random_subject(driver: Chrome, config: AutomationConfig) -> Tuple[str
     except NoSuchElementException:
         pass
 
-    themes = [elem for elem in driver.find_elements(By.CSS_SELECTOR, "ol.list-unstyled a[href]") if elem.is_displayed()]
+    themes = []
+    for elem in driver.find_elements(By.CSS_SELECTOR, "ol.list-unstyled a[href]"):
+        if not elem.is_displayed():
+            continue
+        theme_text = elem.text.strip()
+        excluded_for_subject = EXCLUDED_SUBJECT_THEMES.get(subject_text, set())
+        if theme_text and theme_text not in excluded_for_subject:
+            themes.append((elem, theme_text))
     if not themes:
         raise AutomationError("Nav tēmu")
 
-    selected_theme = random.choice(themes)
-    theme_text = selected_theme.text.strip()
+    selected_theme, theme_text = random.choice(themes)
     notify("theme_selected", theme=theme_text)
     safe_click(driver, selected_theme)
     time.sleep(2)
@@ -279,35 +299,84 @@ def select_random_subject(driver: Chrome, config: AutomationConfig) -> Tuple[str
     return subject_text, theme_text
 
 
-def open_random_task(driver: Chrome, config: AutomationConfig) -> str:
-    container = None
-    for selector in (
-        "section.block:nth-child(2) > div:nth-child(2)",
-        "section.block:nth-child(1) > div:nth-child(2)",
-    ):
+def collect_available_tasks(driver: Chrome) -> List[TaskOption]:
+    options: List[TaskOption] = []
+    seen_hrefs: Set[str] = set()
+
+    sections = driver.find_elements(By.CSS_SELECTOR, "section.block")
+    for section in sections:
         try:
-            container = wait_for(driver, selector, 6)
-            if container:
-                break
-        except AutomationError:
+            heading = section.find_element(By.CSS_SELECTOR, "h2").text.strip()
+        except NoSuchElementException:
+            heading = ""
+        heading_lower = heading.lower()
+        item_type = "Tests" if "test" in heading_lower else "Uzdevums"
+
+        rows = section.find_elements(By.CSS_SELECTOR, "table.exercise-table tbody tr")
+        if rows:
+            for row in rows:
+                try:
+                    link = row.find_element(By.CSS_SELECTOR, "a[href]")
+                except NoSuchElementException:
+                    continue
+                href = link.get_attribute("href") or ""
+                if href in seen_hrefs:
+                    continue
+                title = link.text.strip()
+                if not title:
+                    continue
+                seen_hrefs.add(href)
+                completed = False
+                try:
+                    earned = row.find_element(By.CSS_SELECTOR, ".points .earned").text.strip()
+                    maximum = row.find_element(By.CSS_SELECTOR, ".points .max").text.strip()
+                    if earned and maximum and earned == maximum:
+                        completed = True
+                except NoSuchElementException:
+                    pass
+                options.append(TaskOption(link, title, item_type, completed, href))
             continue
-    if not container:
+
+        body_links = section.find_elements(By.CSS_SELECTOR, "div:nth-child(2) a[href]")
+        if not body_links:
+            body_links = section.find_elements(By.CSS_SELECTOR, "a[href]")
+        for link in body_links:
+            if not link.is_displayed():
+                continue
+            href = link.get_attribute("href") or ""
+            if href in seen_hrefs:
+                continue
+            title = link.text.strip()
+            if not title:
+                continue
+            seen_hrefs.add(href)
+            options.append(TaskOption(link, title, item_type, False, href))
+
+    return options
+
+
+def open_random_task(driver: Chrome, config: AutomationConfig) -> TaskOption:
+    options = collect_available_tasks(driver)
+    if not options:
         raise AutomationError("Nav uzdevumu")
 
-    tasks = [elem for elem in container.find_elements(By.CSS_SELECTOR, "a[href]") if elem.is_displayed()]
-    if not tasks:
-        raise AutomationError("Nav uzdevumu")
-
-    selection = random.choice(tasks)
-    task_name = selection.text.strip()
-    notify("task_selected", task=task_name)
-    safe_click(driver, selection)
+    incomplete = [option for option in options if not option.completed]
+    selection = random.choice(incomplete or options)
+    notify("task_selected", task=selection.title)
+    notify("task_kind", kind=selection.item_type)
+    safe_click(driver, selection.element)
     time.sleep(3)
     decline_cookies(driver, config.wait_timeout)
-    return task_name
+    return selection
 
 
-def extract_task_metadata(driver: Chrome, subject: str, theme: str, task_title: str, config: AutomationConfig) -> TaskMetadata:
+def extract_task_metadata(
+    driver: Chrome,
+    subject: str,
+    theme: str,
+    selected_task: TaskOption,
+    config: AutomationConfig,
+) -> TaskMetadata:
     try:
         html_element = wait_for(driver, "#taskhtml", config.wait_timeout)
     except AutomationError as exc:
@@ -331,7 +400,8 @@ def extract_task_metadata(driver: Chrome, subject: str, theme: str, task_title: 
     metadata = TaskMetadata(
         subject=subject,
         theme=theme,
-        task_title=task_title,
+        task_title=selected_task.title,
+        item_type=selected_task.item_type,
         html=html_content,
         text_preview=preview,
         points=points,
@@ -353,8 +423,8 @@ def ensure_task_with_inputs(driver: Chrome, subject: str, theme: str, config: Au
     theme_url = driver.current_url
 
     while True:
-        task_title = open_random_task(driver, config)
-        metadata = extract_task_metadata(driver, subject, theme, task_title, config)
+        selected_task = open_random_task(driver, config)
+        metadata = extract_task_metadata(driver, subject, theme, selected_task, config)
         if metadata.should_skip:
             notify("retry_task")
             driver.back()
@@ -511,7 +581,7 @@ def log_result(config: AutomationConfig, task: TaskMetadata, answers: Sequence[s
     try:
         timestamp = _dt.datetime.now().isoformat(timespec="seconds")
         entry = (
-            f"{timestamp}\t{task.subject}\t{task.theme}\t{task.task_title}\t"
+            f"{timestamp}\t{task.subject}\t{task.theme}\t{task.task_title}\t{task.item_type}\t"
             f"{task.points}\t{' | '.join(answers)}\n"
         )
         config.log_file.parent.mkdir(parents=True, exist_ok=True)
