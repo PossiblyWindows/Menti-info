@@ -14,7 +14,6 @@ from typing import Callable, Dict, List, Optional
 import undetected_chromedriver as uc
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
@@ -78,6 +77,14 @@ def click(driver, element):
         element.click()
     except Exception:  # noqa: BLE001 - Selenium raises many exception types
         driver.execute_script("arguments[0].click();", element)
+
+
+def type_with_delay(element, value: str) -> None:
+    """Type the provided value character-by-character with small pauses."""
+    element.clear()
+    for character in str(value):
+        element.send_keys(character)
+        time.sleep(0.08 + random.random() * 0.06)
 
 
 def clear_cookies(driver, logger: Logger = None) -> None:
@@ -247,7 +254,7 @@ def build_prompt(task: TaskData) -> str:
         "- Ja piedāvāti varianti, atgriez to numurus (1, 2, 3, …) pareizajā secībā, katru jaunā rindā.",
         "- Ja jāaizpilda teksts vai skaitļi, atgriez katru vērtību atsevišķā rindā.",
         "- Ja nevari noteikt atbildi, neatbildi vispār.",
-        "- Nekādu paskaidrojumu, ievada vai papildteksta — tikai rezultāts.",
+        "- Nekādu sveicienu, paskaidrojumu vai papildteksta — tikai rezultāts.",
         "- Sniedz atbildi vienā sūtījumā bez turpinājumiem vai paskaidrojumiem.",
     ]
 
@@ -261,6 +268,8 @@ def build_prompt(task: TaskData) -> str:
             for option in task.options
         ]
         prompt += "\n\nVarianti:\n" + "\n".join(options_lines)
+    elif re.search(r"\d,\d", task.text):
+        prompt += "\n\nIevēro komatu kā decimālo atdalītāju atbildē."
 
     prompt += "\n"
     return prompt
@@ -282,9 +291,12 @@ def ask_chatgpt(task: TaskData, logger: Logger = None):
         gpt_driver.quit()
         raise RuntimeError("Nevar atrast ChatGPT ievades lauku")
 
-    textarea.send_keys(Keys.CONTROL, "a")
-    textarea.send_keys(Keys.DELETE)
-    textarea.send_keys(prompt)
+    gpt_driver.execute_script(
+        "arguments[0].value = arguments[1];"
+        "arguments[0].dispatchEvent(new Event('input', { bubbles: true }));",
+        textarea,
+        prompt,
+    )
     time.sleep(1)
     click(gpt_driver, w(gpt_driver, "#composer-submit-button"))
     log_message("📨  Sūtīts GPT", logger)
@@ -317,6 +329,8 @@ def parse_answer(answer: str, task: TaskData):
     if not lines:
         return {"mode": "empty", "values": []}
 
+    decimal_with_comma = bool(re.search(r"\d,\d", task.text))
+
     if task.options:
         option_map = {option.index: option for option in task.options}
         selected = []
@@ -341,9 +355,24 @@ def parse_answer(answer: str, task: TaskData):
 
         return {"mode": "select", "values": selected}
 
-    stripped_lines = [re.sub(r"^\s*\d+[\)\.-:]*\s*", "", line) for line in lines]
+    stripped_lines = []
+    for line in lines:
+        cleaned = re.sub(r"^\s*\d+[\)\.-:]*\s*", "", line).strip()
+        if cleaned:
+            if decimal_with_comma:
+                cleaned = cleaned.replace(".", ",")
+            stripped_lines.append(cleaned)
+
     if not stripped_lines:
-        stripped_lines = re.findall(r"-?\d+(?:\.\d+)?", answer)
+        matches = re.findall(r"-?\d+(?:[\.,]\d+)?", answer)
+        for match in matches:
+            normalized = match.replace(" ", "")
+            if decimal_with_comma:
+                normalized = normalized.replace(".", ",")
+            else:
+                normalized = normalized.replace(",", ".")
+            stripped_lines.append(normalized)
+
     return {"mode": "text", "values": stripped_lines}
 
 
@@ -359,10 +388,10 @@ def fill_in_answers(driver, values, logger: Logger = None):
     for element, value in zip(inputs, values):
         try:
             driver.execute_script("arguments[0].scrollIntoView({block:'center'});", element)
-            element.clear()
-            element.send_keys(str(value))
+            type_with_delay(element, str(value))
         except Exception:
             continue
+        time.sleep(0.2 + random.random() * 0.2)
 
     submit_button = w(driver, "#submitAnswerBtn")
     if submit_button is not None:
@@ -388,6 +417,7 @@ def select_answers(driver, task: TaskData, indexes: List[int], logger: Logger = 
         try:
             click(driver, target)
             chosen.append(index)
+            time.sleep(0.25 + random.random() * 0.2)
         except Exception:
             continue
 
