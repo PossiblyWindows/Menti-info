@@ -13,6 +13,7 @@ from typing import Callable, Dict, List, Optional
 
 import undetected_chromedriver as uc
 from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
@@ -275,15 +276,30 @@ def ask_chatgpt(task: TaskData, logger: Logger = None):
         gpt_driver.quit()
         raise RuntimeError("Nevar atrast ChatGPT ievades lauku")
 
+    click(gpt_driver, textarea)
+    time.sleep(0.2)
+
     textarea.send_keys(Keys.CONTROL, "a")
     textarea.send_keys(Keys.DELETE)
 
-    for character in prompt:
-        if character == "\n":
-            textarea.send_keys(Keys.SHIFT, Keys.ENTER)
-        else:
-            textarea.send_keys(character)
-        time.sleep(0.02)
+    lines = prompt.split("\n")
+    for line_index, line in enumerate(lines):
+        if line:
+            for character in line:
+                textarea.send_keys(character)
+                time.sleep(0.02)
+        if line_index < len(lines) - 1:
+            ActionChains(gpt_driver).key_down(Keys.SHIFT, textarea).send_keys(Keys.ENTER).key_up(Keys.SHIFT, textarea).perform()
+            time.sleep(0.05)
+
+    typed_prompt = textarea.get_attribute("value") or ""
+    if typed_prompt != prompt:
+        gpt_driver.execute_script(
+            "arguments[0].value = arguments[1];"
+            "arguments[0].dispatchEvent(new Event('input', {bubbles: true}));",
+            textarea,
+            prompt,
+        )
 
     time.sleep(0.4)
 
@@ -410,7 +426,7 @@ def select_answers(driver, task: TaskData, indexes: List[int], logger: Logger = 
 
 
 def run_automation(user: str, password: str, logger: Logger = None) -> None:
-    log_message("=== Uzdevumi.lv Automāts ===", logger)
+    log_message("=== Uzdevumi.lv bots ===", logger)
 
     options = uc.ChromeOptions()
     options.add_argument("--incognito")
@@ -515,7 +531,7 @@ def run_customtkinter_ui(
     import tkinter.messagebox as messagebox
 
     app = ctk.CTk()
-    app.title("Uzdevumi.lv Automāts")
+    app.title("Uzdevumi.lv bots")
     app.geometry("520x480")
 
     next_backend: Optional[str] = None
@@ -526,7 +542,7 @@ def run_customtkinter_ui(
 
     app.grid_columnconfigure(0, weight=1)
 
-    header = ctk.CTkLabel(app, text="Automātiskais risinātājs", font=("Arial", 20, "bold"))
+    header = ctk.CTkLabel(app, text="Bot", font=("Arial", 20, "bold"))
     header.grid(row=0, column=0, pady=(12, 4))
 
     backend_frame = ctk.CTkFrame(app)
@@ -668,7 +684,7 @@ def run_tkinter_ui(
     from tkinter import messagebox, ttk
 
     root = tk.Tk()
-    root.title("Uzdevumi.lv Automāts")
+    root.title("Uzdevumi.lv bots")
     root.geometry("520x480")
 
     next_backend: Optional[str] = None
@@ -678,7 +694,7 @@ def run_tkinter_ui(
     root.grid_columnconfigure(0, weight=1)
     root.grid_rowconfigure(4, weight=1)
 
-    header = ttk.Label(root, text="Automātiskais risinātājs", font=("Arial", 18, "bold"))
+    header = ttk.Label(root, text="Bot", font=("Arial", 18, "bold"))
     header.grid(row=0, column=0, pady=(12, 4))
 
     backend_frame = ttk.Frame(root)
@@ -820,14 +836,14 @@ def run_pyqt_ui(
     class MainWindow(QtWidgets.QWidget):
         def __init__(self) -> None:
             super().__init__()
-            self.setWindowTitle("Uzdevumi.lv Automāts")
+            self.setWindowTitle("Uzdevumi.lv bots")
             self.resize(560, 500)
             self.running = False
             self.next_backend: Optional[str] = None
 
             layout = QtWidgets.QVBoxLayout(self)
 
-            header = QtWidgets.QLabel("Automātiskais risinātājs")
+            header = QtWidgets.QLabel("Bot")
             header_font = header.font()
             header_font.setPointSize(18)
             header_font.setBold(True)
@@ -939,14 +955,14 @@ def run_pyside_ui(
     class MainWindow(QtWidgets.QWidget):
         def __init__(self) -> None:
             super().__init__()
-            self.setWindowTitle("Uzdevumi.lv Automāts")
+            self.setWindowTitle("Uzdevumi.lv bots")
             self.resize(560, 500)
             self.running = False
             self.next_backend: Optional[str] = None
 
             layout = QtWidgets.QVBoxLayout(self)
 
-            header = QtWidgets.QLabel("Automātiskais risinātājs")
+            header = QtWidgets.QLabel("Bot")
             header_font = header.font()
             header_font.setPointSize(18)
             header_font.setBold(True)
@@ -1091,7 +1107,7 @@ def launch_gui(default_backend: Optional[str] = "customtkinter") -> None:
 
 
 def main(argv: Optional[List[str]] = None) -> None:
-    parser = argparse.ArgumentParser(description="Uzdevumi.lv automatizācijas palīgs")
+    parser = argparse.ArgumentParser(description="Uzdevumi.lv bota palīgs")
     parser.add_argument(
         "--backend",
         choices=[
