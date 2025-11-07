@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """Automates answering uzdevumi.lv tasks with the help of ChatGPT."""
 
+import argparse
+import queue
 import random
 import re
 import sys
@@ -482,6 +484,20 @@ def detect_backends() -> Dict[str, object]:
     except ImportError:
         pass
 
+    try:
+        from PySide2 import QtCore as QtCoreS2, QtGui as QtGuiS2, QtWidgets as QtWidgetsS2  # type: ignore
+
+        available["pyside2"] = (QtWidgetsS2, QtCoreS2, QtGuiS2)
+    except ImportError:
+        pass
+
+    try:
+        from PySide6 import QtCore as QtCoreS6, QtGui as QtGuiS6, QtWidgets as QtWidgetsS6  # type: ignore
+
+        available["pyside6"] = (QtWidgetsS6, QtCoreS6, QtGuiS6)
+    except ImportError:
+        pass
+
     return available
 
 
@@ -498,6 +514,7 @@ def run_customtkinter_ui(
 
     next_backend: Optional[str] = None
     running = False
+    closing = False
 
     backend_var = ctk.StringVar(value=current_backend)
 
@@ -555,19 +572,40 @@ def run_customtkinter_ui(
     app.grid_rowconfigure(4, weight=1)
     log_box.configure(state="disabled")
 
-    def append_log(message: str) -> None:
-        def update() -> None:
-            log_box.configure(state="normal")
-            log_box.insert("end", message + "\n")
-            log_box.see("end")
-            log_box.configure(state="disabled")
+    log_queue: "queue.Queue[str]" = queue.Queue()
 
-        app.after(0, update)
+    def append_log(message: str) -> None:
+        if closing:
+            return
+        log_queue.put(message)
+
+    def process_queue() -> None:
+        if closing or not log_box.winfo_exists():
+            return
+        try:
+            while True:
+                message = log_queue.get_nowait()
+                log_box.configure(state="normal")
+                log_box.insert("end", message + "\n")
+                log_box.see("end")
+                log_box.configure(state="disabled")
+        except queue.Empty:
+            pass
+        if not closing:
+            app.after(120, process_queue)
 
     def finish_run() -> None:
         nonlocal running
         running = False
         start_button.configure(state="normal")
+
+    def safe_schedule(callback: Callable[[], None]) -> None:
+        if closing:
+            return
+        try:
+            app.after(0, callback)
+        except Exception:
+            pass
 
     def worker(user: str, password: str) -> None:
         try:
@@ -575,7 +613,7 @@ def run_customtkinter_ui(
         except Exception as exc:  # noqa: BLE001
             append_log(f"❌ Kļūda: {exc}")
         finally:
-            app.after(0, finish_run)
+            safe_schedule(finish_run)
 
     def start_automation() -> None:
         nonlocal running
@@ -598,8 +636,20 @@ def run_customtkinter_ui(
         if chosen == current_backend:
             return
         next_backend = chosen
-        app.after(50, app.destroy)
+        on_close()
 
+    def on_close() -> None:
+        nonlocal closing
+        if closing:
+            return
+        closing = True
+        try:
+            app.destroy()
+        except Exception:
+            pass
+
+    app.protocol("WM_DELETE_WINDOW", lambda: on_close())
+    app.after(120, process_queue)
     app.mainloop()
     return next_backend
 
@@ -617,6 +667,7 @@ def run_tkinter_ui(
 
     next_backend: Optional[str] = None
     running = False
+    closing = False
 
     root.grid_columnconfigure(0, weight=1)
     root.grid_rowconfigure(4, weight=1)
@@ -645,7 +696,7 @@ def run_tkinter_ui(
         if chosen == current_backend:
             return
         next_backend = chosen
-        root.after(50, root.destroy)
+        on_close()
 
     ttk.Button(backend_frame, text="Pārslēgt", command=request_switch).grid(row=0, column=2, padx=8, pady=8)
 
@@ -667,19 +718,40 @@ def run_tkinter_ui(
     log_text = tk.Text(root, height=10, state="disabled")
     log_text.grid(row=4, column=0, padx=12, pady=(8, 12), sticky="nsew")
 
-    def append_log(message: str) -> None:
-        def update() -> None:
-            log_text.configure(state="normal")
-            log_text.insert("end", message + "\n")
-            log_text.see("end")
-            log_text.configure(state="disabled")
+    log_queue: "queue.Queue[str]" = queue.Queue()
 
-        root.after(0, update)
+    def append_log(message: str) -> None:
+        if closing:
+            return
+        log_queue.put(message)
+
+    def process_queue() -> None:
+        if closing or not log_text.winfo_exists():
+            return
+        try:
+            while True:
+                message = log_queue.get_nowait()
+                log_text.configure(state="normal")
+                log_text.insert("end", message + "\n")
+                log_text.see("end")
+                log_text.configure(state="disabled")
+        except queue.Empty:
+            pass
+        if not closing:
+            root.after(120, process_queue)
 
     def finish_run() -> None:
         nonlocal running
         running = False
         start_button.configure(state="normal")
+
+    def safe_schedule(callback: Callable[[], None]) -> None:
+        if closing:
+            return
+        try:
+            root.after(0, callback)
+        except Exception:
+            pass
 
     def worker(user: str, password: str) -> None:
         try:
@@ -687,7 +759,7 @@ def run_tkinter_ui(
         except Exception as exc:  # noqa: BLE001
             append_log(f"❌ Kļūda: {exc}")
         finally:
-            root.after(0, finish_run)
+            safe_schedule(finish_run)
 
     def start_automation() -> None:
         nonlocal running
@@ -704,8 +776,22 @@ def run_tkinter_ui(
 
     start_button = ttk.Button(button_frame, text="Sākt", command=start_automation)
     start_button.grid(row=0, column=0, padx=8, pady=8)
-    ttk.Button(button_frame, text="Aizvērt", command=root.destroy).grid(row=0, column=1, padx=8, pady=8)
+    ttk.Button(button_frame, text="Aizvērt", command=lambda: on_close()).grid(
+        row=0, column=1, padx=8, pady=8
+    )
 
+    def on_close() -> None:
+        nonlocal closing
+        if closing:
+            return
+        closing = True
+        try:
+            root.destroy()
+        except Exception:
+            pass
+
+    root.protocol("WM_DELETE_WINDOW", on_close)
+    root.after(120, process_queue)
     root.mainloop()
     return next_backend
 
@@ -833,15 +919,140 @@ def run_pyqt_ui(
     return window.next_backend
 
 
-def launch_gui(default_backend: str = "customtkinter") -> None:
+def run_pyside_ui(
+    modules,
+    backend_names: List[str],
+    current_backend: str,
+) -> Optional[str]:
+    QtWidgets, QtCore, _ = modules
+
+    class LogEmitter(QtCore.QObject):
+        log_signal = QtCore.Signal(str)
+        done_signal = QtCore.Signal()
+
+    class MainWindow(QtWidgets.QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.setWindowTitle("Uzdevumi.lv Automāts")
+            self.resize(560, 500)
+            self.running = False
+            self.next_backend: Optional[str] = None
+
+            layout = QtWidgets.QVBoxLayout(self)
+
+            header = QtWidgets.QLabel("Automātiskais risinātājs")
+            header_font = header.font()
+            header_font.setPointSize(18)
+            header_font.setBold(True)
+            header.setFont(header_font)
+            layout.addWidget(header)
+
+            backend_layout = QtWidgets.QHBoxLayout()
+            layout.addLayout(backend_layout)
+            backend_label = QtWidgets.QLabel("Saskarnes veids")
+            backend_layout.addWidget(backend_label)
+
+            self.backend_combo = QtWidgets.QComboBox()
+            self.backend_combo.addItems(backend_names)
+            index = self.backend_combo.findText(current_backend)
+            if index >= 0:
+                self.backend_combo.setCurrentIndex(index)
+            backend_layout.addWidget(self.backend_combo, 1)
+
+            switch_button = QtWidgets.QPushButton("Pārslēgt")
+            switch_button.clicked.connect(self.request_switch)
+            backend_layout.addWidget(switch_button)
+
+            form_layout = QtWidgets.QFormLayout()
+            layout.addLayout(form_layout)
+
+            self.user_edit = QtWidgets.QLineEdit()
+            form_layout.addRow("Personas kods", self.user_edit)
+
+            self.password_edit = QtWidgets.QLineEdit()
+            self.password_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+            form_layout.addRow("Parole", self.password_edit)
+
+            button_layout = QtWidgets.QHBoxLayout()
+            layout.addLayout(button_layout)
+
+            self.start_button = QtWidgets.QPushButton("Sākt")
+            self.start_button.clicked.connect(self.start_automation)
+            button_layout.addWidget(self.start_button)
+
+            close_button = QtWidgets.QPushButton("Aizvērt")
+            close_button.clicked.connect(self.close)
+            button_layout.addWidget(close_button)
+
+            self.log_view = QtWidgets.QPlainTextEdit()
+            self.log_view.setReadOnly(True)
+            layout.addWidget(self.log_view, 1)
+
+            self.emitter = LogEmitter()
+            self.emitter.log_signal.connect(self.append_log)
+            self.emitter.done_signal.connect(self.finish_run)
+
+        def append_log(self, message: str) -> None:
+            self.log_view.appendPlainText(message)
+            self.log_view.verticalScrollBar().setValue(
+                self.log_view.verticalScrollBar().maximum()
+            )
+
+        def finish_run(self) -> None:
+            self.running = False
+            self.start_button.setEnabled(True)
+
+        def request_switch(self) -> None:
+            chosen = self.backend_combo.currentText()
+            if chosen == current_backend:
+                return
+            self.next_backend = chosen
+            self.close()
+
+        def start_automation(self) -> None:
+            if self.running:
+                return
+            user = self.user_edit.text().strip()
+            password = self.password_edit.text().strip()
+            if not user or not password:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Kļūda",
+                    "Lūdzu ievadi gan personas kodu, gan paroli.",
+                )
+                return
+            self.running = True
+            self.start_button.setEnabled(False)
+
+            def worker() -> None:
+                try:
+                    run_automation(user, password, logger=self.emitter.log_signal.emit)
+                except Exception as exc:  # noqa: BLE001
+                    self.emitter.log_signal.emit(f"❌ Kļūda: {exc}")
+                finally:
+                    self.emitter.done_signal.emit()
+
+            threading.Thread(target=worker, daemon=True).start()
+
+    app = QtWidgets.QApplication(sys.argv or ["uzdevumi_bot"])
+    window = MainWindow()
+    window.show()
+    exec_method = getattr(app, "exec", None)
+    if exec_method is None:
+        exec_method = getattr(app, "exec_")
+    exec_method()
+    return window.next_backend
+
+
+def launch_gui(default_backend: Optional[str] = "customtkinter") -> None:
     available = detect_backends()
     if not available:
         raise RuntimeError("Nav pieejams neviens grafiskās saskarnes modulis.")
 
-    order = ["customtkinter", "tkinter", "pyqt5", "pyqt6"]
+    order = ["customtkinter", "tkinter", "pyqt5", "pyqt6", "pyside6", "pyside2"]
     backend_names = [candidate for candidate in order if candidate in available]
 
-    backend = default_backend if default_backend in available else None
+    backend = default_backend if (default_backend and default_backend in available) else None
     if backend is None:
         backend = backend_names[0] if backend_names else next(iter(available.keys()))
 
@@ -863,9 +1074,33 @@ def launch_gui(default_backend: str = "customtkinter") -> None:
                 backend = None
                 continue
             backend = run_pyqt_ui(modules, backend_names, backend) or None
+        elif backend in ("pyside2", "pyside6"):
+            modules = available.get(backend)
+            if modules is None:
+                backend = None
+                continue
+            backend = run_pyside_ui(modules, backend_names, backend) or None
         else:
             backend = None
 
 
+def main(argv: Optional[List[str]] = None) -> None:
+    parser = argparse.ArgumentParser(description="Uzdevumi.lv automatizācijas palīgs")
+    parser.add_argument(
+        "--backend",
+        choices=[
+            "customtkinter",
+            "tkinter",
+            "pyqt5",
+            "pyqt6",
+            "pyside2",
+            "pyside6",
+        ],
+        help="Piespiedu grafiskās saskarnes izvēle, ja pieejama.",
+    )
+    args = parser.parse_args(argv)
+    launch_gui(default_backend=args.backend or "customtkinter")
+
+
 if __name__ == "__main__":
-    launch_gui()
+    main()
