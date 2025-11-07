@@ -4,8 +4,10 @@
 import random
 import re
 import sys
+import threading
 import time
-from getpass import getpass
+from dataclasses import dataclass
+from typing import Callable, Dict, List, Optional
 
 import undetected_chromedriver as uc
 from selenium.common.exceptions import TimeoutException
@@ -13,6 +15,36 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+
+
+@dataclass
+class TaskOption:
+    index: int
+    text: str
+    option_type: str
+    input_element: object
+    label_element: object
+
+
+@dataclass
+class TaskData:
+    text: str
+    options: List[TaskOption]
+    points: str
+
+
+Logger = Optional[Callable[[str], None]]
+
+
+def log_message(message: str, logger: Logger = None) -> None:
+    """Log a message to stdout and the optional callback."""
+    print(message)
+    if logger is not None:
+        try:
+            logger(message)
+        except Exception:
+            # Avoid propagating logging issues to the automation flow.
+            pass
 
 
 def w(driver, css, timeout=10):
@@ -46,7 +78,16 @@ def click(driver, element):
         driver.execute_script("arguments[0].click();", element)
 
 
-def decline_cookies(driver):
+def clear_cookies(driver, logger: Logger = None) -> None:
+    """Clear all cookies for the provided driver instance."""
+    try:
+        driver.delete_all_cookies()
+        log_message("🧹  Notīrītas sīkdatnes", logger)
+    except Exception:
+        log_message("⚠  Neizdevās notīrīt sīkdatnes", logger)
+
+
+def decline_cookies(driver, logger: Logger = None):
     try:
         button = WebDriverWait(driver, 3).until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, "#CybotCookiebotDialogBodyButtonDecline"))
@@ -54,17 +95,17 @@ def decline_cookies(driver):
     except TimeoutException:
         return
     click(driver, button)
-    print("🍪  Sīkfaili noraidīti")
+    log_message("🍪  Sīkfaili noraidīti", logger)
     time.sleep(1)
 
 
-def login(driver, user, password):
-    print("🔑  Ieiešana…")
+def login(driver, user, password, logger: Logger = None):
+    log_message("🔑  Ieiešana…", logger)
     driver.get(
         "https://www.uzdevumi.lv/Sso/AuthRedirect/eklase?authAction=alor&rememberMe=False&isPopup=True"
     )
     time.sleep(3)
-    decline_cookies(driver)
+    decline_cookies(driver, logger)
 
     w(driver, "#UserName").send_keys(user)
     w(driver, "div.InputForm_Row:nth-child(2) > input:nth-child(1)").send_keys(password)
@@ -76,15 +117,15 @@ def login(driver, user, password):
         click(driver, profiles[0])
         time.sleep(3)
 
-    decline_cookies(driver)
-    print("✔  Ienākts")
+    decline_cookies(driver, logger)
+    log_message("✔  Ienākts", logger)
 
 
-def select_task(driver):
-    print("📚  Meklē priekšmetu…")
+def select_task(driver, logger: Logger = None):
+    log_message("📚  Meklē priekšmetu…", logger)
     driver.get("https://www.uzdevumi.lv/p")
     time.sleep(3)
-    decline_cookies(driver)
+    decline_cookies(driver, logger)
 
     subjects_list = w(driver, "ul.list-unstyled.thumbnails", 12)
     subjects = []
@@ -97,13 +138,13 @@ def select_task(driver):
         ]
 
     if not subjects:
-        sys.exit("Nav piemērotu priekšmetu")
+        raise RuntimeError("Nav piemērotu priekšmetu")
 
     anchor, title = subjects[0]
-    print(f"➡  Priekšmets: {title}")
+    log_message(f"➡  Priekšmets: {title}", logger)
     click(driver, anchor)
     time.sleep(3)
-    decline_cookies(driver)
+    decline_cookies(driver, logger)
 
     try:
         click(driver, driver.find_element(By.CSS_SELECTOR, ".ui-button"))
@@ -113,13 +154,13 @@ def select_task(driver):
 
     topics = [elem for elem in driver.find_elements(By.CSS_SELECTOR, "ol.list-unstyled a[href]") if elem.is_displayed()]
     if not topics:
-        sys.exit("Nav tēmu")
+        raise RuntimeError("Nav tēmu")
 
     chosen_topic = random.choice(topics)
-    print(f"➡  Tēma: {chosen_topic.text.strip()}")
+    log_message(f"➡  Tēma: {chosen_topic.text.strip()}", logger)
     click(driver, chosen_topic)
     time.sleep(3)
-    decline_cookies(driver)
+    decline_cookies(driver, logger)
 
     container = None
     for selector in (
@@ -131,17 +172,17 @@ def select_task(driver):
             break
 
     if container is None:
-        sys.exit("Nav uzdevumu")
+        raise RuntimeError("Nav uzdevumu")
 
     tasks = [elem for elem in container.find_elements(By.CSS_SELECTOR, "a[href]") if elem.is_displayed()]
     selected_task = random.choice(tasks)
-    print(f"➡  Uzdevums: {selected_task.text.strip()}")
+    log_message(f"➡  Uzdevums: {selected_task.text.strip()}", logger)
     click(driver, selected_task)
     time.sleep(4)
-    decline_cookies(driver)
+    decline_cookies(driver, logger)
 
 
-def fetch_task(driver):
+def fetch_task(driver, logger: Logger = None) -> Optional[TaskData]:
     wrapper = w(driver, "#taskhtml > div", 10)
     if wrapper is None:
         return None
@@ -161,11 +202,11 @@ def fetch_task(driver):
         "img,[style*='background-image'],.gxs-resource-image,.gxst-resource-image,.gxs-dnd-option,.answer-box,.ui-draggable",
     )
     if media_elements:
-        print("⚠  Uzdevums ar bildēm / vilkšanu – izlaižam")
+        log_message("⚠  Uzdevums ar bildēm / vilkšanu – izlaižam", logger)
         return "SKIP"
 
     option_items = wrapper.find_elements(By.CSS_SELECTOR, "ul.gxs-answer-select > li")
-    options = []
+    options: List[TaskOption] = []
     for index, item in enumerate(option_items, start=1):
         try:
             input_element = item.find_element(By.CSS_SELECTOR, "input")
@@ -179,27 +220,23 @@ def fetch_task(driver):
             label_element = None
             option_text = item.text.strip()
 
-        input_type = input_element.get_attribute("type") or ""
+        input_type = (input_element.get_attribute("type") or "").lower()
         options.append(
-            {
-                "index": index,
-                "text": option_text,
-                "type": input_type.lower(),
-                "input": input_element,
-                "label": label_element,
-            }
+            TaskOption(
+                index=index,
+                text=option_text,
+                option_type=input_type,
+                input_element=input_element,
+                label_element=label_element,
+            )
         )
 
-    print(f"📝  Teksts: {summary}")
-    print(f"⭐  Punkti: {points}")
-    return {
-        "text": text_content,
-        "options": options,
-        "points": points,
-    }
+    log_message(f"📝  Teksts: {summary}", logger)
+    log_message(f"⭐  Punkti: {points}", logger)
+    return TaskData(text=text_content, options=options, points=points)
 
 
-def build_prompt(task):
+def build_prompt(task: TaskData) -> str:
     """Build a deterministic prompt for ChatGPT based on extracted task text."""
     base = [
         "Tu esi asistents, kas risina uzdevumi.lv testus un sniedz tikai galīgo atbildi.",
@@ -214,12 +251,12 @@ def build_prompt(task):
 
     prompt = "\n".join(base)
     prompt += "\n\nUzdevuma teksts:\n"
-    prompt += task["text"]
+    prompt += task.text
 
-    if task["options"]:
+    if task.options:
         options_lines = [
-            f"{option['index']}. {option['text']}"
-            for option in task["options"]
+            f"{option.index}. {option.text}"
+            for option in task.options
         ]
         prompt += "\n\nVarianti:\n" + "\n".join(options_lines)
 
@@ -227,13 +264,13 @@ def build_prompt(task):
     return prompt
 
 
-def ask_chatgpt(task):
+def ask_chatgpt(task: TaskData, logger: Logger = None):
     """Open ChatGPT, send the prompt, and retrieve the last response."""
-    print("🤖  Atveru ChatGPT…")
+    log_message("🤖  Atveru ChatGPT…", logger)
     options = uc.ChromeOptions()
-    options.add_argument("--user-data-dir=./chatgpt_profils")
     options.add_argument("--new-window")
     gpt_driver = uc.Chrome(options=options)
+    clear_cookies(gpt_driver, logger)
     gpt_driver.get("https://chat.openai.com/")
     time.sleep(8)
 
@@ -241,14 +278,14 @@ def ask_chatgpt(task):
     textarea = w(gpt_driver, "#prompt-textarea", 15)
     if textarea is None:
         gpt_driver.quit()
-        sys.exit("Nevar atrast ChatGPT ievades lauku")
+        raise RuntimeError("Nevar atrast ChatGPT ievades lauku")
 
     textarea.send_keys(Keys.CONTROL, "a")
     textarea.send_keys(Keys.DELETE)
     textarea.send_keys(prompt)
     time.sleep(1)
     click(gpt_driver, w(gpt_driver, "#composer-submit-button"))
-    print("📨  Sūtīts GPT")
+    log_message("📨  Sūtīts GPT", logger)
 
     # Wait for the message bubble to finish streaming.
     response_text = ""
@@ -263,11 +300,14 @@ def ask_chatgpt(task):
             if response_text and not response_text.endswith("…"):
                 break
 
-    print("💬  GPT atbilde:", response_text[:80] + ("…" if len(response_text) > 80 else ""))
+    log_message(
+        "💬  GPT atbilde: " + response_text[:80] + ("…" if len(response_text) > 80 else ""),
+        logger,
+    )
     return response_text, gpt_driver
 
 
-def parse_answer(answer, task):
+def parse_answer(answer: str, task: TaskData):
     if not answer:
         return {"mode": "empty", "values": []}
 
@@ -275,8 +315,8 @@ def parse_answer(answer, task):
     if not lines:
         return {"mode": "empty", "values": []}
 
-    if task["options"]:
-        option_map = {option["index"]: option for option in task["options"]}
+    if task.options:
+        option_map = {option.index: option for option in task.options}
         selected = []
 
         for line in lines:
@@ -292,9 +332,9 @@ def parse_answer(answer, task):
                 continue
 
             normalized = line.lower()
-            for option in task["options"]:
-                if option["text"].lower() == normalized and option["index"] not in selected:
-                    selected.append(option["index"])
+            for option in task.options:
+                if option.text.lower() == normalized and option.index not in selected:
+                    selected.append(option.index)
                     break
 
         return {"mode": "select", "values": selected}
@@ -305,13 +345,13 @@ def parse_answer(answer, task):
     return {"mode": "text", "values": stripped_lines}
 
 
-def fill_in_answers(driver, values):
+def fill_in_answers(driver, values, logger: Logger = None):
     inputs = driver.find_elements(
         By.CSS_SELECTOR,
         "input[type='text'],input[type='number'],textarea,input.gxs-answer-number",
     )
     if not inputs:
-        print("⚠  Nav ievades lauku")
+        log_message("⚠  Nav ievades lauku", logger)
         return
 
     for element, value in zip(inputs, values):
@@ -325,24 +365,24 @@ def fill_in_answers(driver, values):
     submit_button = w(driver, "#submitAnswerBtn")
     if submit_button is not None:
         click(driver, submit_button)
-        print("✅  Iesniegts")
+        log_message("✅  Iesniegts", logger)
     else:
-        print("⚠  Nav pogas")
+        log_message("⚠  Nav pogas", logger)
 
 
-def select_answers(driver, task, indexes):
+def select_answers(driver, task: TaskData, indexes: List[int], logger: Logger = None):
     if not indexes:
-        print("⚠  Nav izvēles atbilžu")
+        log_message("⚠  Nav izvēles atbilžu", logger)
         return
 
-    options = {option["index"]: option for option in task["options"]}
+    options = {option.index: option for option in task.options}
     chosen = []
     for index in indexes:
         option = options.get(index)
         if option is None:
             continue
 
-        target = option["label"] if option["label"] else option["input"]
+        target = option.label_element if option.label_element else option.input_element
         try:
             click(driver, target)
             chosen.append(index)
@@ -350,58 +390,482 @@ def select_answers(driver, task, indexes):
             continue
 
     if chosen:
-        print("➡  Atzīmēti varianti:", ", ".join(str(i) for i in chosen))
+        log_message("➡  Atzīmēti varianti: " + ", ".join(str(i) for i in chosen), logger)
         submit_button = w(driver, "#submitAnswerBtn")
         if submit_button is not None:
             click(driver, submit_button)
-            print("✅  Iesniegts")
+            log_message("✅  Iesniegts", logger)
         else:
-            print("⚠  Nav pogas")
+            log_message("⚠  Nav pogas", logger)
     else:
-        print("⚠  Neizdevās atzīmēt variantus")
+        log_message("⚠  Neizdevās atzīmēt variantus", logger)
 
 
-def main():
-    print("=== Uzdevumi.lv Automāts ===")
-    user = input("👤 Personas kods: ")
-    password = getpass("🔒 Parole: ")
+def run_automation(user: str, password: str, logger: Logger = None) -> None:
+    log_message("=== Uzdevumi.lv Automāts ===", logger)
 
     options = uc.ChromeOptions()
-    options.add_argument("--user-data-dir=./uzdevumi_profils")
+    options.add_argument("--incognito")
     driver = uc.Chrome(options=options)
+    clear_cookies(driver, logger)
 
     gpt_driver = None
     try:
-        login(driver, user, password)
-        select_task(driver)
+        login(driver, user, password, logger)
+        select_task(driver, logger)
 
-        task = fetch_task(driver)
+        task = fetch_task(driver, logger)
         while task == "SKIP":
-            print("↻  Meklē citu uzdevumu…")
-            select_task(driver)
-            task = fetch_task(driver)
+            log_message("↻  Meklē citu uzdevumu…", logger)
+            select_task(driver, logger)
+            task = fetch_task(driver, logger)
 
         if task is None:
-            print("⚠  Neizdevās iegūt uzdevumu")
+            log_message("⚠  Neizdevās iegūt uzdevumu", logger)
             return
 
-        answer, gpt_driver = ask_chatgpt(task)
+        answer, gpt_driver = ask_chatgpt(task, logger)
         parsed = parse_answer(answer, task)
 
         if parsed["mode"] == "select":
-            select_answers(driver, task, parsed["values"])
+            select_answers(driver, task, parsed["values"], logger)
         elif parsed["mode"] == "text" and parsed["values"]:
-            print("➡  Ievadām:", parsed["values"])
-            fill_in_answers(driver, parsed["values"])
+            log_message("➡  Ievadām: " + ", ".join(str(v) for v in parsed["values"]), logger)
+            fill_in_answers(driver, parsed["values"], logger)
         else:
-            print("⚠  GPT neatgrieza derīgas vērtības")
+            log_message("⚠  GPT neatgrieza derīgas vērtības", logger)
 
-        input("\nEnter — aizvērt pārlūkus…")
+        log_message("✅  Automatizācija pabeigta", logger)
     finally:
+        try:
+            clear_cookies(driver, logger)
+        except Exception:
+            pass
         driver.quit()
         if gpt_driver:
+            try:
+                clear_cookies(gpt_driver, logger)
+            except Exception:
+                pass
             gpt_driver.quit()
 
 
+def detect_backends() -> Dict[str, object]:
+    """Return a mapping of available GUI backend identifiers to their modules."""
+    available: Dict[str, object] = {}
+
+    try:
+        import customtkinter as ctk  # type: ignore
+
+        available["customtkinter"] = ctk
+    except ImportError:
+        pass
+
+    try:
+        import tkinter  # noqa: F401 - imported for availability check
+
+        available.setdefault("tkinter", None)
+    except ImportError:
+        pass
+
+    try:
+        from PyQt5 import QtCore, QtGui, QtWidgets  # type: ignore
+
+        available["pyqt5"] = (QtWidgets, QtCore, QtGui)
+    except ImportError:
+        pass
+
+    try:
+        from PyQt6 import QtCore as QtCore6, QtGui as QtGui6, QtWidgets as QtWidgets6  # type: ignore
+
+        available["pyqt6"] = (QtWidgets6, QtCore6, QtGui6)
+    except ImportError:
+        pass
+
+    return available
+
+
+def run_customtkinter_ui(
+    ctk,
+    backend_names: List[str],
+    current_backend: str,
+) -> Optional[str]:
+    import tkinter.messagebox as messagebox
+
+    app = ctk.CTk()
+    app.title("Uzdevumi.lv Automāts")
+    app.geometry("520x480")
+
+    next_backend: Optional[str] = None
+    running = False
+
+    backend_var = ctk.StringVar(value=current_backend)
+
+    app.grid_columnconfigure(0, weight=1)
+
+    header = ctk.CTkLabel(app, text="Automātiskais risinātājs", font=("Arial", 20, "bold"))
+    header.grid(row=0, column=0, pady=(12, 4))
+
+    backend_frame = ctk.CTkFrame(app)
+    backend_frame.grid(row=1, column=0, padx=12, pady=8, sticky="ew")
+    backend_frame.grid_columnconfigure(1, weight=1)
+
+    backend_label = ctk.CTkLabel(backend_frame, text="Saskarnes veids")
+    backend_label.grid(row=0, column=0, padx=8, pady=8, sticky="w")
+
+    backend_selector = ctk.CTkOptionMenu(
+        backend_frame,
+        values=backend_names,
+        variable=backend_var,
+    )
+    backend_selector.grid(row=0, column=1, padx=8, pady=8, sticky="ew")
+
+    switch_button = ctk.CTkButton(
+        backend_frame,
+        text="Pārslēgt",
+        command=lambda: request_switch(),
+    )
+    switch_button.grid(row=0, column=2, padx=8, pady=8)
+
+    credentials = ctk.CTkFrame(app)
+    credentials.grid(row=2, column=0, padx=12, pady=8, sticky="ew")
+    credentials.grid_columnconfigure(1, weight=1)
+
+    user_label = ctk.CTkLabel(credentials, text="Personas kods")
+    user_label.grid(row=0, column=0, padx=8, pady=6, sticky="w")
+    user_entry = ctk.CTkEntry(credentials)
+    user_entry.grid(row=0, column=1, padx=8, pady=6, sticky="ew")
+
+    password_label = ctk.CTkLabel(credentials, text="Parole")
+    password_label.grid(row=1, column=0, padx=8, pady=6, sticky="w")
+    password_entry = ctk.CTkEntry(credentials, show="*")
+    password_entry.grid(row=1, column=1, padx=8, pady=6, sticky="ew")
+
+    button_frame = ctk.CTkFrame(app)
+    button_frame.grid(row=3, column=0, padx=12, pady=8, sticky="ew")
+
+    start_button = ctk.CTkButton(button_frame, text="Sākt", command=lambda: start_automation())
+    start_button.grid(row=0, column=0, padx=8, pady=8)
+
+    stop_button = ctk.CTkButton(button_frame, text="Aizvērt", command=app.destroy)
+    stop_button.grid(row=0, column=1, padx=8, pady=8)
+
+    log_box = ctk.CTkTextbox(app, height=220)
+    log_box.grid(row=4, column=0, padx=12, pady=(8, 12), sticky="nsew")
+    app.grid_rowconfigure(4, weight=1)
+    log_box.configure(state="disabled")
+
+    def append_log(message: str) -> None:
+        def update() -> None:
+            log_box.configure(state="normal")
+            log_box.insert("end", message + "\n")
+            log_box.see("end")
+            log_box.configure(state="disabled")
+
+        app.after(0, update)
+
+    def finish_run() -> None:
+        nonlocal running
+        running = False
+        start_button.configure(state="normal")
+
+    def worker(user: str, password: str) -> None:
+        try:
+            run_automation(user, password, logger=append_log)
+        except Exception as exc:  # noqa: BLE001
+            append_log(f"❌ Kļūda: {exc}")
+        finally:
+            app.after(0, finish_run)
+
+    def start_automation() -> None:
+        nonlocal running
+        if running:
+            return
+
+        user = user_entry.get().strip()
+        password = password_entry.get().strip()
+        if not user or not password:
+            messagebox.showerror("Kļūda", "Lūdzu ievadi gan personas kodu, gan paroli.")
+            return
+
+        running = True
+        start_button.configure(state="disabled")
+        threading.Thread(target=worker, args=(user, password), daemon=True).start()
+
+    def request_switch() -> None:
+        nonlocal next_backend
+        chosen = backend_var.get()
+        if chosen == current_backend:
+            return
+        next_backend = chosen
+        app.after(50, app.destroy)
+
+    app.mainloop()
+    return next_backend
+
+
+def run_tkinter_ui(
+    backend_names: List[str],
+    current_backend: str,
+) -> Optional[str]:
+    import tkinter as tk
+    from tkinter import messagebox, ttk
+
+    root = tk.Tk()
+    root.title("Uzdevumi.lv Automāts")
+    root.geometry("520x480")
+
+    next_backend: Optional[str] = None
+    running = False
+
+    root.grid_columnconfigure(0, weight=1)
+    root.grid_rowconfigure(4, weight=1)
+
+    header = ttk.Label(root, text="Automātiskais risinātājs", font=("Arial", 18, "bold"))
+    header.grid(row=0, column=0, pady=(12, 4))
+
+    backend_frame = ttk.Frame(root)
+    backend_frame.grid(row=1, column=0, padx=12, pady=8, sticky="ew")
+    backend_frame.columnconfigure(1, weight=1)
+
+    ttk.Label(backend_frame, text="Saskarnes veids").grid(row=0, column=0, padx=8, pady=8, sticky="w")
+
+    backend_var = tk.StringVar(value=current_backend)
+    backend_menu = ttk.Combobox(
+        backend_frame,
+        textvariable=backend_var,
+        values=backend_names,
+        state="readonly",
+    )
+    backend_menu.grid(row=0, column=1, padx=8, pady=8, sticky="ew")
+
+    def request_switch() -> None:
+        nonlocal next_backend
+        chosen = backend_var.get()
+        if chosen == current_backend:
+            return
+        next_backend = chosen
+        root.after(50, root.destroy)
+
+    ttk.Button(backend_frame, text="Pārslēgt", command=request_switch).grid(row=0, column=2, padx=8, pady=8)
+
+    credentials = ttk.Frame(root)
+    credentials.grid(row=2, column=0, padx=12, pady=8, sticky="ew")
+    credentials.columnconfigure(1, weight=1)
+
+    ttk.Label(credentials, text="Personas kods").grid(row=0, column=0, padx=8, pady=6, sticky="w")
+    user_entry = ttk.Entry(credentials)
+    user_entry.grid(row=0, column=1, padx=8, pady=6, sticky="ew")
+
+    ttk.Label(credentials, text="Parole").grid(row=1, column=0, padx=8, pady=6, sticky="w")
+    password_entry = ttk.Entry(credentials, show="*")
+    password_entry.grid(row=1, column=1, padx=8, pady=6, sticky="ew")
+
+    button_frame = ttk.Frame(root)
+    button_frame.grid(row=3, column=0, padx=12, pady=8)
+
+    log_text = tk.Text(root, height=10, state="disabled")
+    log_text.grid(row=4, column=0, padx=12, pady=(8, 12), sticky="nsew")
+
+    def append_log(message: str) -> None:
+        def update() -> None:
+            log_text.configure(state="normal")
+            log_text.insert("end", message + "\n")
+            log_text.see("end")
+            log_text.configure(state="disabled")
+
+        root.after(0, update)
+
+    def finish_run() -> None:
+        nonlocal running
+        running = False
+        start_button.configure(state="normal")
+
+    def worker(user: str, password: str) -> None:
+        try:
+            run_automation(user, password, logger=append_log)
+        except Exception as exc:  # noqa: BLE001
+            append_log(f"❌ Kļūda: {exc}")
+        finally:
+            root.after(0, finish_run)
+
+    def start_automation() -> None:
+        nonlocal running
+        if running:
+            return
+        user = user_entry.get().strip()
+        password = password_entry.get().strip()
+        if not user or not password:
+            messagebox.showerror("Kļūda", "Lūdzu ievadi gan personas kodu, gan paroli.")
+            return
+        running = True
+        start_button.configure(state="disabled")
+        threading.Thread(target=worker, args=(user, password), daemon=True).start()
+
+    start_button = ttk.Button(button_frame, text="Sākt", command=start_automation)
+    start_button.grid(row=0, column=0, padx=8, pady=8)
+    ttk.Button(button_frame, text="Aizvērt", command=root.destroy).grid(row=0, column=1, padx=8, pady=8)
+
+    root.mainloop()
+    return next_backend
+
+
+def run_pyqt_ui(
+    modules,
+    backend_names: List[str],
+    current_backend: str,
+) -> Optional[str]:
+    QtWidgets, QtCore, _ = modules
+
+    pyqt_signal = getattr(QtCore, "pyqtSignal", None)
+    if pyqt_signal is None:
+        pyqt_signal = getattr(QtCore, "Signal")
+
+    class LogEmitter(QtCore.QObject):
+        log_signal = pyqt_signal(str)
+        done_signal = pyqt_signal()
+
+    class MainWindow(QtWidgets.QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.setWindowTitle("Uzdevumi.lv Automāts")
+            self.resize(560, 500)
+            self.running = False
+            self.next_backend: Optional[str] = None
+
+            layout = QtWidgets.QVBoxLayout(self)
+
+            header = QtWidgets.QLabel("Automātiskais risinātājs")
+            header_font = header.font()
+            header_font.setPointSize(18)
+            header_font.setBold(True)
+            header.setFont(header_font)
+            layout.addWidget(header)
+
+            backend_layout = QtWidgets.QHBoxLayout()
+            layout.addLayout(backend_layout)
+            backend_label = QtWidgets.QLabel("Saskarnes veids")
+            backend_layout.addWidget(backend_label)
+
+            self.backend_combo = QtWidgets.QComboBox()
+            self.backend_combo.addItems(backend_names)
+            index = self.backend_combo.findText(current_backend)
+            if index >= 0:
+                self.backend_combo.setCurrentIndex(index)
+            backend_layout.addWidget(self.backend_combo, 1)
+
+            switch_button = QtWidgets.QPushButton("Pārslēgt")
+            switch_button.clicked.connect(self.request_switch)
+            backend_layout.addWidget(switch_button)
+
+            form_layout = QtWidgets.QFormLayout()
+            layout.addLayout(form_layout)
+
+            self.user_edit = QtWidgets.QLineEdit()
+            form_layout.addRow("Personas kods", self.user_edit)
+
+            self.password_edit = QtWidgets.QLineEdit()
+            self.password_edit.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
+            form_layout.addRow("Parole", self.password_edit)
+
+            button_layout = QtWidgets.QHBoxLayout()
+            layout.addLayout(button_layout)
+
+            self.start_button = QtWidgets.QPushButton("Sākt")
+            self.start_button.clicked.connect(self.start_automation)
+            button_layout.addWidget(self.start_button)
+
+            close_button = QtWidgets.QPushButton("Aizvērt")
+            close_button.clicked.connect(self.close)
+            button_layout.addWidget(close_button)
+
+            self.log_view = QtWidgets.QPlainTextEdit()
+            self.log_view.setReadOnly(True)
+            layout.addWidget(self.log_view, 1)
+
+            self.emitter = LogEmitter()
+            self.emitter.log_signal.connect(self.append_log)
+            self.emitter.done_signal.connect(self.finish_run)
+
+        def append_log(self, message: str) -> None:
+            self.log_view.appendPlainText(message)
+            self.log_view.verticalScrollBar().setValue(self.log_view.verticalScrollBar().maximum())
+
+        def finish_run(self) -> None:
+            self.running = False
+            self.start_button.setEnabled(True)
+
+        def request_switch(self) -> None:
+            chosen = self.backend_combo.currentText()
+            if chosen == current_backend:
+                return
+            self.next_backend = chosen
+            self.close()
+
+        def start_automation(self) -> None:
+            if self.running:
+                return
+            user = self.user_edit.text().strip()
+            password = self.password_edit.text().strip()
+            if not user or not password:
+                QtWidgets.QMessageBox.critical(self, "Kļūda", "Lūdzu ievadi gan personas kodu, gan paroli.")
+                return
+            self.running = True
+            self.start_button.setEnabled(False)
+
+            def worker() -> None:
+                try:
+                    run_automation(user, password, logger=self.emitter.log_signal.emit)
+                except Exception as exc:  # noqa: BLE001
+                    self.emitter.log_signal.emit(f"❌ Kļūda: {exc}")
+                finally:
+                    self.emitter.done_signal.emit()
+
+            threading.Thread(target=worker, daemon=True).start()
+
+    app = QtWidgets.QApplication(sys.argv or ["uzdevumi_bot"])
+    window = MainWindow()
+    window.show()
+    exec_method = getattr(app, "exec", None)
+    if exec_method is None:
+        exec_method = getattr(app, "exec_")
+    exec_method()
+    return window.next_backend
+
+
+def launch_gui(default_backend: str = "customtkinter") -> None:
+    available = detect_backends()
+    if not available:
+        raise RuntimeError("Nav pieejams neviens grafiskās saskarnes modulis.")
+
+    order = ["customtkinter", "tkinter", "pyqt5", "pyqt6"]
+    backend_names = [candidate for candidate in order if candidate in available]
+
+    backend = default_backend if default_backend in available else None
+    if backend is None:
+        backend = backend_names[0] if backend_names else next(iter(available.keys()))
+
+    if backend is None:
+        backend = next(iter(available.keys()))
+
+    while backend is not None:
+        if backend == "customtkinter":
+            modules = available.get("customtkinter")
+            if modules is None:
+                backend = "tkinter"
+                continue
+            backend = run_customtkinter_ui(modules, backend_names, backend) or None
+        elif backend == "tkinter":
+            backend = run_tkinter_ui(backend_names, backend) or None
+        elif backend in ("pyqt5", "pyqt6"):
+            modules = available.get(backend)
+            if modules is None:
+                backend = None
+                continue
+            backend = run_pyqt_ui(modules, backend_names, backend) or None
+        else:
+            backend = None
+
+
 if __name__ == "__main__":
-    main()
+    launch_gui()
