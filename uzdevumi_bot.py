@@ -103,7 +103,7 @@ def decline_cookies(driver, logger: Logger = None):
 
 
 def login(driver, user, password, logger: Logger = None):
-    log_message("🔑  Ieiešana…", logger)
+    log_message("🔑  Notiek ieiešana…", logger)
     driver.get(
         "https://www.uzdevumi.lv/Sso/AuthRedirect/eklase?authAction=alor&rememberMe=False&isPopup=True"
     )
@@ -289,14 +289,14 @@ def ask_chatgpt(task: TaskData, logger: Logger = None):
                 textarea.send_keys(character)
                 time.sleep(0.02)
         if line_index < len(lines) - 1:
-            ActionChains(gpt_driver).key_down(Keys.SHIFT, textarea).send_keys(Keys.ENTER).key_up(Keys.SHIFT, textarea).perform()
+            textarea.send_keys(Keys.END)
+            textarea.send_keys(Keys.SHIFT, Keys.ENTER)
             time.sleep(0.05)
 
     typed_prompt = textarea.get_attribute("value") or ""
     if typed_prompt != prompt:
         gpt_driver.execute_script(
-            "arguments[0].value = arguments[1];"
-            "arguments[0].dispatchEvent(new Event('input', {bubbles: true}));",
+            "arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', {bubbles: true}));",
             textarea,
             prompt,
         )
@@ -517,6 +517,13 @@ def detect_backends() -> Dict[str, object]:
         from PySide6 import QtCore as QtCoreS6, QtGui as QtGuiS6, QtWidgets as QtWidgetsS6  # type: ignore
 
         available["pyside6"] = (QtWidgetsS6, QtCoreS6, QtGuiS6)
+    except ImportError:
+        pass
+
+    try:
+        import PySimpleGUI as sg  # type: ignore
+
+        available["pysimplegui"] = sg
     except ImportError:
         pass
 
@@ -818,6 +825,84 @@ def run_tkinter_ui(
     return next_backend
 
 
+def run_pysimplegui_ui(
+    sg,
+    backend_names: List[str],
+    current_backend: str,
+) -> Optional[str]:
+    sg.theme("SystemDefault")
+
+    layout = [
+        [sg.Text("Uzdevumi.lv bots", font=("Arial", 18, "bold"), expand_x=True, justification="center")],
+        [
+            sg.Text("Saskarnes veids", size=(16, 1)),
+            sg.Combo(
+                backend_names,
+                default_value=current_backend,
+                readonly=True,
+                key="-BACKEND-",
+                expand_x=True,
+            ),
+            sg.Button("Pārslēgt", key="-SWITCH-"),
+        ],
+        [sg.Text("Personas kods", size=(16, 1)), sg.Input(key="-USER-", expand_x=True)],
+        [sg.Text("Parole", size=(16, 1)), sg.Input(password_char="*", key="-PASS-", expand_x=True)],
+        [sg.Button("Sākt", key="-START-"), sg.Button("Aizvērt")],
+        [sg.Multiline(size=(70, 16), key="-LOG-", autoscroll=True, disabled=True)],
+    ]
+
+    window = sg.Window("Uzdevumi.lv bots", layout, finalize=True, resizable=True)
+
+    next_backend: Optional[str] = None
+    running = False
+    log_queue: "queue.Queue[str]" = queue.Queue()
+
+    def append_log(message: str) -> None:
+        log_queue.put(message)
+
+    def worker(user: str, password: str) -> None:
+        try:
+            run_automation(user, password, logger=append_log)
+        except Exception as exc:  # noqa: BLE001
+            append_log(f"❌ Kļūda: {exc}")
+        finally:
+            log_queue.put("__DONE__")
+
+    while True:
+        event, values = window.read(timeout=120)
+        if event in (sg.WIN_CLOSED, "Aizvērt"):
+            break
+        if event == "-SWITCH-":
+            chosen = values.get("-BACKEND-")
+            if chosen and chosen != current_backend:
+                next_backend = chosen
+                break
+        if event == "-START-" and not running:
+            user = (values.get("-USER-") or "").strip()
+            password = (values.get("-PASS-") or "").strip()
+            if not user or not password:
+                sg.popup_error("Lūdzu ievadi gan personas kodu, gan paroli.")
+                continue
+            running = True
+            window["-START-"].update(disabled=True)
+            window["-LOG-"].update("")
+            threading.Thread(target=worker, args=(user, password), daemon=True).start()
+
+        try:
+            while True:
+                message = log_queue.get_nowait()
+                if message == "__DONE__":
+                    running = False
+                    window["-START-"].update(disabled=False)
+                    continue
+                window["-LOG-"].update(message + "\n", append=True)
+        except queue.Empty:
+            pass
+
+    window.close()
+    return next_backend
+
+
 def run_pyqt_ui(
     modules,
     backend_names: List[str],
@@ -1071,7 +1156,15 @@ def launch_gui(default_backend: Optional[str] = "customtkinter") -> None:
     if not available:
         raise RuntimeError("Nav pieejams neviens grafiskās saskarnes modulis.")
 
-    order = ["customtkinter", "tkinter", "pyqt5", "pyqt6", "pyside6", "pyside2"]
+    order = [
+        "customtkinter",
+        "tkinter",
+        "pysimplegui",
+        "pyqt5",
+        "pyqt6",
+        "pyside6",
+        "pyside2",
+    ]
     backend_names = [candidate for candidate in order if candidate in available]
 
     backend = default_backend if (default_backend and default_backend in available) else None
@@ -1090,6 +1183,12 @@ def launch_gui(default_backend: Optional[str] = "customtkinter") -> None:
             backend = run_customtkinter_ui(modules, backend_names, backend) or None
         elif backend == "tkinter":
             backend = run_tkinter_ui(backend_names, backend) or None
+        elif backend == "pysimplegui":
+            modules = available.get("pysimplegui")
+            if modules is None:
+                backend = None
+                continue
+            backend = run_pysimplegui_ui(modules, backend_names, backend) or None
         elif backend in ("pyqt5", "pyqt6"):
             modules = available.get(backend)
             if modules is None:
