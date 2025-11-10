@@ -923,6 +923,19 @@ def fetch_task(driver, lang, logger: Logger = None) -> Optional[TaskData]:
 
 # ----------------------- GPT session --------------------
 
+CHATGPT_STATIC_COOKIES = [
+    {
+        "name": "oai-client-auth-info",
+        "value": "%7B%22user%22%3A%7B%22name%22%3A%22testing%22%2C%22email%22%3A%22djcookfan61%40gmail.com%22%2C%22picture%22%3A%22https%3A%2F%2Flh3.googleusercontent.com%2Fa%2FACg8ocI1Ml3rBt1R79g0t5TByfumj235eaEaq1cv7KSz4BbZ%3Ds96-c%22%2C%22connectionType%22%3A2%2C%22timestamp%22%3A1762797948624%7D%2C%22isOptedOut%22%3Afalse%7D",
+    },
+    {"name": "oai-did", "value": "a02ca8b0-1bee-4aec-9c54-8fd8a0b7d68c"},
+    {"name": "oai-gn", "value": "Bot"},
+    {
+        "name": "oai-sc",
+        "value": "0gAAAAABpEil8eibRSVZIhLoiHTlQhAyf2UQDcXLGJ5ifhfsHdakXte5-AKdwtR1as_IasavHRbszjbE5rwVhGv71srEKTMS7fEkcpbYfo784ZRapq1cIK818tIowOU6A4oVl8X2UANxjtVA7BhaPf6LESsNW4CtYY1kXQPyhlQVy5a5yt_rKpX15irpsTkROKj2U0itFQS8ZuuS6suQjThxS0gqpotNnuNcqk3n8JilYYDpnLgvNokg",
+    },
+]
+
 
 class ChatGPTSession:
     MAX_RECOVERY_ATTEMPTS = 2
@@ -947,7 +960,11 @@ class ChatGPTSession:
             self.driver.set_page_load_timeout(30)
         except Exception:
             pass
+        self._load_chatgpt_home()
+
+    def _load_chatgpt_home(self):
         self.driver.get("https://chat.openai.com/")
+        self._apply_chatgpt_cookies()
         self._dismiss_small_button()
         self._maybe_click_radix_link()
 
@@ -974,6 +991,27 @@ class ChatGPTSession:
         except Exception:
             pass
 
+    def _apply_chatgpt_cookies(self):
+        try:
+            for entry in CHATGPT_STATIC_COOKIES:
+                cookie = {
+                    "name": entry["name"],
+                    "value": entry["value"],
+                    "domain": "chat.openai.com",
+                    "path": "/",
+                    "secure": True,
+                }
+                try:
+                    self.driver.add_cookie(cookie)
+                except Exception:
+                    continue
+            try:
+                self.driver.refresh()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def _ensure_alive(self):
         try:
             handles = self.driver.window_handles
@@ -987,9 +1025,7 @@ class ChatGPTSession:
             self._build_driver()
             try:
                 self.driver.delete_all_cookies()
-                self.driver.get("https://chat.openai.com/")
-                self._dismiss_small_button()
-                self._maybe_click_radix_link()
+                self._load_chatgpt_home()
             except Exception:
                 pass
 
@@ -999,11 +1035,9 @@ class ChatGPTSession:
         except Exception:
             pass
         try:
-            self.driver.get("https://chat.openai.com/")
+            self._load_chatgpt_home()
         except Exception:
             self._build_driver()
-        self._dismiss_small_button()
-        self._maybe_click_radix_link()
 
     def _with_driver_recovery(self, fn: Callable[[], str]) -> str:
         attempt = 0
@@ -1037,9 +1071,7 @@ class ChatGPTSession:
     def refresh(self):
         self._ensure_alive()
         try:
-            self.driver.get("https://chat.openai.com/")
-            self._dismiss_small_button()
-            self._maybe_click_radix_link()
+            self._load_chatgpt_home()
         except Exception:
             self._build_driver()
 
